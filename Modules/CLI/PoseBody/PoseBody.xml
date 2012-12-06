@@ -27,7 +27,7 @@
       <index>1</index>
       <description><![CDATA[Armature file. The transforms are expected to be stored as cell data for each armature edge with the name "Transforms"]]></description>
     </geometry>
-    <geometry fileExtensions=".stl|.vtk">
+    <geometry fileExtensions=".vtk">
       <name>SurfaceInput</name>
       <label>Surface</label>
       <channel>input</channel>

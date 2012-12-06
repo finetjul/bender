@@ -137,7 +137,8 @@ void ComputeDomainVoxels(WeightImage::Pointer image //input
     for(int iOff=0; iOff<8; ++iOff)
       {
       Voxel q = p + offsets[iOff];
-      if(!domain->GetPixel(q))
+      if(domain->GetLargestPossibleRegion().IsInside(q) &&
+         !domain->GetPixel(q))
         {
         domain->SetPixel(q,true);
         domainVoxels.push_back(q);
@@ -255,10 +256,16 @@ int main( int argc, char * argv[] )
     itk::Point<double,3> x(xraw);
     itk::ContinuousIndex<double,3> coord;
     weight0->TransformPhysicalPointToContinuousIndex(x, coord);
+    if (!weightRegion.IsInside(coord))
+      {
+      continue;
+      }
     bool res = bender::Lerp<WeightImage>(weightMap,coord,weight0, 0, w_pi);
     if(!res)
       {
-      cerr<<"WARNING: Lerp failed for "<<coord<<endl;
+      cerr<<"WARNING: Lerp failed for "<< pi
+          << " l:[" << xraw[0] << ", " << xraw[1] << ", " << xraw[2] << "]"
+          << " w:" << coord<<endl;
       }
     else
       {
