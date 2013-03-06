@@ -1,0 +1,161 @@
+<?xml version="1.0" encoding="utf-8"?>
+<executable>
+  <category>Surface Models</category>
+  <title>Decimate Model</title>
+  <description><![CDATA[<p>Decimate a model.</p>]]></description>
+  <version>1.0.0</version>
+  <documentation-url>http://public.kitware.com/Wiki/Bender/Documentation/1.0/Modules/DecimateModel</documentation-url>
+  <license/>
+  <contributor>Julien Finet (Kitware)</contributor>
+  <acknowledgements><![CDATA[Air Force Research Laboratories]]></acknowledgements>
+  <parameters>
+    <label>IO</label>
+    <description><![CDATA[Input/output parameters]]></description>
+    <geometry>
+      <name>InputModel</name>
+      <label>Input Model</label>
+      <channel>input</channel>
+      <index>0</index>
+      <description><![CDATA[Input model]]></description>
+    </geometry>
+    <geometry fileExtensions=".vtk">
+      <name>DecimatedModel</name>
+      <label>Output Decimated Model</label>
+      <channel>output</channel>
+      <index>1</index>
+      <description><![CDATA[Decimated model]]></description>
+    </geometry>
+  </parameters>
+
+  <parameters advanced="true">
+    <label>PreProcess</label>
+
+    <boolean>
+      <name>PreSplitMesh</name>
+      <label>Pre-Split Mesh</label>
+      <longflag>--preSplit</longflag>
+      <description><![CDATA[In some cases you may wish to split the mesh prior to algorithm execution. This separates the mesh into semi-planar patches, which are disconnected from each other.]]></description>
+      <default>0</default>
+    </boolean>
+
+    <boolean>
+      <name>Triangulate</name>
+      <label>Triangulate</label>
+      <longflag>--triangulate</longflag>
+      <description><![CDATA[Triangulate before processing. The model is automatically triangulated if there is no triangle in the model.]]></description>
+      <default>0</default>
+    </boolean>
+
+  </parameters>
+
+  <parameters>
+    <label>Filter Settings</label>
+    <double>
+      <name>TargetReduction</name>
+      <label>Target Reduction</label>
+      <flag>-t</flag>
+      <longflag>--target</longflag>
+      <description><![CDATA[Specify the desired reduction in the total number of polygons.]]></description>
+      <default>0.90</default>
+    </double>
+    <boolean>
+      <name>PreserveTopology</name>
+      <label>Preserve Topology</label>
+      <flag>-p</flag>
+      <longflag>--preserveTopology</longflag>
+      <description><![CDATA[If on, mesh splitting and hole elimination will not occur. This may limit the maximum reduction that may be achieved.]]></description>
+      <default>0</default>
+    </boolean>
+    <double>
+      <name>FeatureAngle</name>
+      <label>Feature Angle</label>
+      <flag>-f</flag>
+      <longflag>--featureAngle</longflag>
+      <description><![CDATA[This angle is used to define what an edge is.]]></description>
+      <default>15</default>
+    </double>
+    <boolean>
+      <name>Splitting</name>
+      <label>Splitting</label>
+      <flag>-s</flag>
+      <longflag>--splitting</longflag>
+      <description><![CDATA[Turn on/off the splitting of the mesh at corners, along edges, at non-manifold points, or anywhere else a split is required. Turning splitting off will better preserve the original topology of the mesh, but you may not obtain the requested reduction.]]></description>
+      <default>true</default>
+    </boolean>
+    <double>
+      <name>SplitAngle</name>
+      <label>Split Angle</label>
+      <flag>-a</flag>
+      <longflag>--splitAngle</longflag>
+      <description><![CDATA[Specify the mesh split angle. A split line exists when the surface normals between two edge connected triangles are >= SplitAngle.]]></description>
+      <default>75</default>
+    </double>
+    <boolean>
+      <name>BoundaryVertexDeletion</name>
+      <label>Boundary Vertex Deletion</label>
+      <flag>-b</flag>
+      <longflag>--boundaryVertexDeletion</longflag>
+      <description><![CDATA[If on, vertices on the boundary of a mesh are deleted. This may limit the maximum reduction that may be achieved.]]></description>
+      <default>true</default>
+    </boolean>
+    <integer>
+      <name>Degree</name>
+      <label>Triangle Degree</label>
+      <flag>-d</flag>
+      <longflag>--degree</longflag>
+      <description><![CDATA[If the number of triangles connected to a vertex exceeds Degree, then the vertex will be split..]]></description>
+      <default>25</default>
+    </integer>
+
+  </parameters>
+
+  <parameters advanced="true">
+    <label>PostProcess</label>
+
+    <boolean>
+      <name>FillHoles</name>
+      <label>Fill holes</label>
+      <longflag>--fillHoles</longflag>
+      <description><![CDATA[Apply a fill holes filter.]]></description>
+      <default>false</default>
+    </boolean>
+
+  </parameters>
+
+
+  <parameters advanced="true">
+    <label>Advanced</label>
+
+    <boolean>
+      <name>AbsoluteError</name>
+      <label>Absolute Maximum Error</label>
+      <longflag>--absoluteError</longflag>
+      <description><![CDATA[If on, the error is absolute.]]></description>
+      <default>0</default>
+    </boolean>
+    <double>
+      <name>MaximumError</name>
+      <label>Maximum Error</label>
+      <flag>-m</flag>
+      <longflag>--maximumError</longflag>
+      <description><![CDATA[Set the largest decimation error that is allowed during the decimation process. This may limit the maximum reduction that may be achieved. The maximum error is specified as a fraction of the maximum length of the input data bounding box.]]></description>
+      <default>100000000000000</default>
+    </double>
+    <boolean>
+      <name>AccumulateError</name>
+      <label>Accumulate Error</label>
+      <longflag>--accumulateError</longflag>
+      <description><![CDATA[If off, then the error is not accumulated.]]></description>
+      <default>0</default>
+    </boolean>
+
+    <boolean>
+      <name>Debug</name>
+      <label>Debug</label>
+      <longflag>--debug</longflag>
+      <description><![CDATA[Print debug information.]]></description>
+      <default>0</default>
+    </boolean>
+
+  </parameters>
+</executable>
