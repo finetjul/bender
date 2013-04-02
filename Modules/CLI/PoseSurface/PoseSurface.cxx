@@ -972,11 +972,29 @@ int main( int argc, char * argv[] )
         {
         Mat24 dq;
         dq.Fill(0.0);
+        double weight = 0;
         for(int i=0; i < numWeights; ++i)
           {
           double w = surfaceVertexWeights[i]->GetValue(pi) / wSum;
           Mat24& dq_i(dqs[i]);
-          dq += dq_i*w;
+          Mat24 dq_iw = dq_i*w;
+#ifdef NO_SCLERP
+          double dot = dq_i[0][0]*dq[0][0] + dq_i[0][1]*dq[0][1] + dq_i[0][2]*dq[0][2] + dq_i[0][3]*dq[0][3];
+          if (dot < 0)
+            {
+            dq_iw = dq_iw * -1.;
+            }
+          dq += dq_iw;
+#else
+          if (dq[0][0] == 0.0 && w > 0.0)
+            {
+            dq = dq_i;
+            }
+          else if (w > 0.0)
+            {
+            ScLERP((const double (*)[4])&dq(0,0), (const double (*)[4])&dq_i(0,0), w, (double (*)[4])&dq(0,0));
+            }
+#endif
           }
         Vec4 q;
         Vec3 t;

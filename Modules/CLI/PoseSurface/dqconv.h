@@ -34,6 +34,8 @@
 
 #include <math.h>
 
+#include <vtkDualQuaternion.h>
+
 // input: unit quaternion 'q0', translation vector 't'
 // output: unit dual quaternion 'dq'
 void QuatTrans2UDQ(const double q0[4], const double t[3],
@@ -73,6 +75,23 @@ void DQ2QuatTrans(const double dq[2][4],
    t[0] = 2.0*(-dq[1][0]*dq[0][1] + dq[1][1]*dq[0][0] - dq[1][2]*dq[0][3] + dq[1][3]*dq[0][2]) / len;
    t[1] = 2.0*(-dq[1][0]*dq[0][2] + dq[1][1]*dq[0][3] + dq[1][2]*dq[0][0] - dq[1][3]*dq[0][1]) / len;
    t[2] = 2.0*(-dq[1][0]*dq[0][3] - dq[1][1]*dq[0][2] + dq[1][2]*dq[0][1] + dq[1][3]*dq[0][0]) / len;
+}
+
+void ScLERP(const double a[2][4], const double b[2][4], double t, double out[2][4])
+{
+  vtkDualQuaternion<double> q1(a[0][0], a[0][1], a[0][2], a[0][3],
+                               a[1][0], a[1][1], a[1][2], a[1][3]);
+  vtkDualQuaternion<double> q2(b[0][0], b[0][1], b[0][2], b[0][3],
+                               b[1][0], b[1][1], b[1][2], b[1][3]);
+  vtkDualQuaternion<double> q3 = q1.ScLerp2(t, q2);
+  out[0][0] = q3.GetReal().GetW();
+  out[0][1] = q3.GetReal().GetX();
+  out[0][2] = q3.GetReal().GetY();
+  out[0][3] = q3.GetReal().GetZ();
+  out[1][0] = q3.GetDual().GetW();
+  out[1][1] = q3.GetDual().GetX();
+  out[1][2] = q3.GetDual().GetY();
+  out[1][3] = q3.GetDual().GetZ();
 }
 
 #endif
