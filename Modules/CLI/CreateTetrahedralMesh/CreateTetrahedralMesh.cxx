@@ -150,7 +150,6 @@ SplitLabelMaps(Cleaver::LabelMapField::ImageType *image, bool verbose)
                                            LabelImageType> RelabelFilterType;
   typedef itk::BinaryThresholdImageFilter<LabelImageType,
                                           LabelImageType> ThresholdFilterType;
-  typedef itk::ImageFileWriter<LabelImageType> ImageWriterType;
 
   // Assign continuous labels to the connected components, background is
   // considered to be 0 and will be ignored in the relabeling process.
@@ -200,7 +199,7 @@ SplitLabelMaps(Cleaver::LabelMapField::ImageType *image, bool verbose)
 }
 
 //----------------------------------------------------------------------------
-bool IsPointInvalid(Cleaver::vec3 pos)
+bool IsPointValid(Cleaver::vec3 pos)
 {
   return vtkBrokenCells::IsPointValid(pos.x, pos.y, pos.z);
 }
@@ -256,6 +255,12 @@ int DoIt( int argc, char * argv[] )
 
       ++imageIterator;
       ++labelsIterator;
+      }
+    if (SaveLabelImages)
+      {
+      std::stringstream fileName;
+      fileName << "label" << i << ".nrrd";
+      bender::IOUtils::WriteDebugImage<LabelImageType>(labels[i], fileName.str());
       }
     }
 
@@ -327,12 +332,15 @@ int DoIt( int argc, char * argv[] )
   int paddedVolumeLabel = labels.size();
 
   // Points and cell arrays
-  vtkNew<vtkCellArray> meshTetras;
   vtkNew<vtkPoints> points;
   points->SetNumberOfPoints(cleaverMesh->tets.size() * 4);
 
+  vtkNew<vtkCellArray> meshTetras;
+  meshTetras->SetNumberOfCells(cleaverMesh->tets.size());
+
   vtkNew<vtkIntArray> cellData;
   cellData->SetName("MaterialId");
+  cellData->SetNumberOfTuples(cleaverMesh->tets.size());
 
   vtkNew<vtkBrokenCells> brokenCells;
   brokenCells->SetPoints(points.GetPointer());
@@ -350,15 +358,16 @@ int DoIt( int argc, char * argv[] )
     for (int j = 0; j < 4; ++j)
       {
       Cleaver::vec3 &pos = cleaverMesh->tets[i]->verts[j]->pos();
-      int vertexIndex = cleaverMesh->tets[i]->verts[j]->tm_v_index;
+      size_t vertexIndex = cleaverMesh->tets[i]->verts[j]->tm_v_index;
 
       points->SetPoint(vertexIndex, pos.x, pos.y, pos.z);
       meshTetra->GetPointIds()->SetId(j, vertexIndex);
 
       // If invalid, flag the cell so it can be rebuild later
-      if (! IsPointInvalid(pos))
+      if (! IsPointValid(pos))
         {
-        std::cerr << "Invalid point for cell " << i
+        std::cerr << "Invalid point (" << pos.x << ", " << pos.y << ", " << pos.z
+                  << ") at cell " << i
           << ", this point will be patched up but something went wrong with"
           << " Cleaver !" << std::endl;
         brokenCells->AddCell(vertexIndex, meshTetra.GetPointer());
@@ -369,9 +378,13 @@ int DoIt( int argc, char * argv[] )
     cellData->InsertNextValue(originalLabels[label]);
     }
 
+  std::cerr << "There are " << brokenCells->GetNumberOfBrokenCells()
+            << " broken cells for " << meshTetras->GetNumberOfCells() << " cells."
+            << std::endl;
   //  Repair broken cells
   if (! brokenCells->RepairAllCells())
     {
+    std::cerr << "Fail to fix the broken cells." << std::endl;
     delete volume;
     delete cleaverMesh;
     return EXIT_FAILURE;
@@ -386,9 +399,14 @@ int DoIt( int argc, char * argv[] )
   vtkMesh->SetPolys(meshTetras.GetPointer());
   vtkMesh->GetCellData()->SetScalars(cellData.GetPointer());
 
+  if (Verbose)
+    {
+    std::cout << "Clean PolyData..." << std::endl;
+    }
   vtkNew<vtkCleanPolyData> cleanFilter;
   cleanFilter->PointMergingOff(); // Prevent from creating triangles or lines
   cleanFilter->SetInput(vtkMesh);
+  cleanFilter->Update();
 
   //---------------------------------------
   //  Transform polydata to fit the image
@@ -447,7 +465,7 @@ int DoIt( int argc, char * argv[] )
   // Scaling and rotation
   vtkNew<vtkMatrix4x4> scaleMatrix;
   scaleMatrix->DeepCopy(directionMatrix.GetPointer());
-  for (int i = 0; i < spacing.GetNumberOfComponents(); ++i)
+  for (size_t i = 0; i < spacing.GetNumberOfComponents(); ++i)
     {
     scaleMatrix->SetElement(i, i, scaleMatrix->GetElement(i, i) * spacing[i]);
     }
