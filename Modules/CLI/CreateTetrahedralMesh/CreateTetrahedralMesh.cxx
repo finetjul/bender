@@ -298,7 +298,8 @@ int DoIt( int argc, char * argv[] )
     labelMaps.push_back(new Cleaver::InverseField(labelMaps[0]));
     }
 
-  Cleaver::AbstractVolume *cleaverVolume = new Cleaver::Volume(labelMaps);
+  Cleaver::AbstractVolume *cleaverVolume =
+    new Cleaver::Volume(labelMaps, 0, 0, 0, true);
   if (Padding)
     {
     cleaverVolume = new Cleaver::PaddedVolume(cleaverVolume);
@@ -310,21 +311,22 @@ int DoIt( int argc, char * argv[] )
       << cleaverVolume->size().toString() << std::endl;
     }
 
+  // No need for the volume nor the labelmaps anymore therefore we can release
+  // the memory.
+  //delete cleaverVolume;
+  //for(size_t i=0; i < labelMaps.size(); ++i)
+  //delete labelMaps[i];
+  //labelMaps.clear();
+  labels.clear();
+  castingFilter = NULL;
+  reader = NULL;
+
   //--------------------------------
   //  Create Mesher & TetMesh
   //--------------------------------
   Cleaver::TetMesh *cleaverMesh =
-    Cleaver::createMeshFromVolume(cleaverVolume, Verbose);
+    Cleaver::createMeshFromVolume(cleaverVolume, Verbose, true);
 
-  // No need for the volume nor the labelmaps anymore therefore we can release
-  // the memory.
-  delete cleaverVolume;
-  for(size_t i=0; i < labelMaps.size(); ++i)
-    delete labelMaps[i];
-  labelMaps.clear();
-  labels.clear();
-  castingFilter = NULL;
-  reader = NULL;
 
   if (!cleaverMesh)
     {
