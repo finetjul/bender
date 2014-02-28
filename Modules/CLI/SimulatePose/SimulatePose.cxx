@@ -24,6 +24,10 @@
 #include "vtkQuaternion.h"
 
 // SOFA includes
+#define SOFA_CUDA
+//#define SOFA_DOUBLE
+//#define SOFA_GPU_CUDA_DOUBLE
+
 #include <sofa/component/collision/BruteForceDetection.h>
 #include <sofa/component/collision/DefaultCollisionGroupManager.h>
 #include <sofa/component/collision/DefaultContactManager.h>
@@ -43,6 +47,7 @@
 #include <sofa/component/projectiveconstraintset/SkeletalMotionConstraint.h>
 #include <sofa/component/topology/MeshTopology.h>
 #include <sofa/component/typedef/Sofa_typedef.h>
+#include <sofa/component/visualmodel/OglModel.h>
 #include <sofa/helper/vector.h>
 #include <sofa/simulation/common/Node.h>
 #include <sofa/simulation/graph/DAGSimulation.h>
@@ -50,9 +55,9 @@
 // SofaCUDA includes
 #ifdef SOFA_CUDA
 #include <plugins/SofaCUDA/sofa/gpu/cuda/CudaTetrahedronFEMForceField.h>
-#include <plugins/SofaCUDA/sofa/gpu/cuda/CudaCollisionDetection.h>
+#include <plugins/SofaCUDA/sofa/gpu/cuda/CudaBarycentricMapping.h>
+//#include <plugins/SofaCUDA/sofa/gpu/cuda/CudaCollisionDetection.h>
 #include <plugins/SofaCUDA/sofa/gpu/cuda/CudaMechanicalObject.h>
-#include <plugins/SofaCUDA/sofa/gpu/cuda/CudaTriangleObject.h>
 #include <plugins/SofaCUDA/sofa/gpu/cuda/CudaLineModel.h>
 #include <plugins/SofaCUDA/sofa/gpu/cuda/CudaPointModel.h>
 #include <plugins/SofaCUDA/sofa/gpu/cuda/CudaUniformMass.h>
@@ -94,6 +99,26 @@ using namespace sofa::component::visualmodel;
 using namespace sofa::helper;
 using namespace sofa::simulation;
 
+#ifdef SOFA_CUDA
+# ifdef SOFA_GPU_CUDA_DOUBLE
+typedef CudaVec3dTypes SofaVec3Types;
+# else
+typedef CudaVec3fTypes SofaVec3Types;
+#endif
+typedef Vec3Types SurfaceVec3Types;
+typedef sofa::component::mapping::BarycentricMapping<SofaVec3Types, SurfaceVec3Types> SofaBarycentricMapping;
+#else
+typedef Vec3Types SofaVec3Types;
+typedef BarycentricMapping3_to_3 SofaBarycentricMapping;
+typedef Vec3Types SurfaceVec3Types;
+#endif
+
+# ifdef SOFA_DOUBLE
+typedef sofa::component::mass::UniformMass<SofaVec3Types, double> SofaUniformMass;
+#else
+typedef sofa::component::mass::UniformMass<SofaVec3Types, float> SofaUniformMass;
+#endif
+
 /// helper function for more compact component creation
 // ---------------------------------------------------------------------
 template<class Component>
@@ -108,27 +133,31 @@ typename Component::SPtr addNew( Node::SPtr parentNode, std::string name="" )
 
 // Copy point positions from vtk to a mechanical object
 // ---------------------------------------------------------------------
-void copyVertices( vtkPoints *                  points,
-                   MechanicalObject<Vec3Types>* mechanicalMesh )
+template<class T>
+size_t copyVertices( vtkPoints *                  points,
+                   MechanicalObject<T>* mechanicalMesh )
 {
   mechanicalMesh->resize(points->GetNumberOfPoints());
 
   std::cout << "  Total # of vertices: " << points->GetNumberOfPoints() <<
     std::endl;
 
-  Data<MechanicalObject<Vec3Types>::VecCoord>* x =
+  Data<typename MechanicalObject<T>::VecCoord>* x =
     mechanicalMesh->write(VecCoordId::position());
 
   // Copy vertices from vtk mesh
-  MechanicalObject<Vec3Types>::VecCoord &vertices = *x->beginEdit();
+  typename MechanicalObject<T>::VecCoord &vertices = *x->beginEdit();
   for(vtkIdType i = 0, end = points->GetNumberOfPoints(); i < end; ++i)
     {
-    Vector3 point;
-    points->GetPoint(i,point.ptr());
+    //
+    double p[3];
+    points->GetPoint(i,p);
+    Vector3 point(p[0], p[1], p[2]);
     vertices[i] = point;
 //     std::cout << "vertex[" << i << "] = " << vertices[i] << std::endl;
     }
   x->endEdit();
+  return points->GetNumberOfPoints();
 }
 
 
@@ -304,7 +333,7 @@ Node::SPtr createRootWithCollisionPipeline(const std::string& responseType = std
 // ---------------------------------------------------------------------
 Node::SPtr createVisualNode(Node *                        parentNode,
                             vtkPolyData *                 polyMesh,
-                            MechanicalObject<Vec3Types> * mechanicalObject,
+                            MechanicalObject<SofaVec3Types> * mechanicalObject,
                             int                           label = 0
                             )
 {
@@ -347,9 +376,9 @@ Node::SPtr createVisualNode(Node *                        parentNode,
     }
   oglModel->setVnormals(&normals);
 
-  IdentityMapping<Vec3Types,
+  IdentityMapping<SofaVec3Types,
                   ExtVec3fTypes>::SPtr identityMapping =
-    addNew<IdentityMapping<Vec3Types, ExtVec3fTypes> >(visualNode,
+    addNew<IdentityMapping<SofaVec3Types, ExtVec3fTypes> >(visualNode,
       "identityMapping");
   identityMapping->setModels(mechanicalObject,oglModel.get());
 
@@ -452,7 +481,7 @@ void getBoneCoordinates(
 
 /// Load bone mesh into a rigid mechanical object
 //----------------------------------------------------------------------
-MechanicalObject<Vec3Types>::SPtr createRigidBoneSurface(
+MechanicalObject<SurfaceVec3Types>::SPtr createRigidBoneSurface(
   Node *       parentNode,
   vtkPolyData *polyMesh,
   int          label = 209)
@@ -485,8 +514,8 @@ MechanicalObject<Vec3Types>::SPtr createRigidBoneSurface(
     triangles = polyMesh->GetPolys();
     }
 
-  MechanicalObject<Vec3Types>::SPtr boneStructure =
-    addNew<MechanicalObject<Vec3Types> >(parentNode, "boneStructure");
+  MechanicalObject<SurfaceVec3Types>::SPtr boneStructure =
+    addNew<MechanicalObject<SurfaceVec3Types> >(parentNode, "boneStructure");
 
   copyVertices(points,boneStructure.get());
 
@@ -548,10 +577,10 @@ MechanicalObject<Rigid3Types>::SPtr createArticulatedFrame(
 /// parentNode prior to calling this function.
 // ---------------------------------------------------------------------
 void createFiniteElementModel(Node *              parentNode,
-                              Vec3Types::VecReal &youngModulus )
+                              SofaVec3Types::VecReal &youngModulus )
 {
-  TetrahedronFEMForceField< Vec3Types >::SPtr femSolver =
-    addNew<TetrahedronFEMForceField< Vec3Types > >(parentNode,"femSolver");
+  TetrahedronFEMForceField< SofaVec3Types >::SPtr femSolver =
+    addNew<TetrahedronFEMForceField< SofaVec3Types > >(parentNode,"femSolver");
   femSolver->setComputeGlobalMatrix(false);
   femSolver->setMethod("large");
   femSolver->setPoissonRatio(.3);
@@ -562,11 +591,11 @@ void createFiniteElementModel(Node *              parentNode,
 /// Loads a vtk tetrahedral polymesh and creates a mechanical object and
 /// the corresponding MeshTopology.
 // ---------------------------------------------------------------------
-MechanicalObject<Vec3Types>::SPtr loadMesh(Node*               parentNode,
-                                           vtkPolyData *       polyMesh,
-                                           Vec3Types::VecReal &youngModulus,
-                                           int                 label = 0
-                                           )
+MechanicalObject<SofaVec3Types>::SPtr loadMesh(Node*               parentNode,
+                                               vtkPolyData *       polyMesh,
+                                               SofaVec3Types::VecReal &youngModulus,
+                                               int                 label = 0
+)
 {
   // load mesh
   vtkSmartPointer<vtkPoints>    points;
@@ -596,8 +625,8 @@ MechanicalObject<Vec3Types>::SPtr loadMesh(Node*               parentNode,
   meshName << "Mesh" << label;
 
   // Create mechanical object (dof) for the mesh and extract material parameters
-  MechanicalObject<Vec3Types>::SPtr mechanicalMesh =
-    addNew<MechanicalObject<Vec3Types> >(parentNode,meshName.str());
+  MechanicalObject<SofaVec3Types>::SPtr mechanicalMesh =
+    addNew<MechanicalObject<SofaVec3Types> >(parentNode,meshName.str());
 
   copyVertices(points.GetPointer(),mechanicalMesh.get());
 
@@ -650,15 +679,17 @@ MechanicalObject<Vec3Types>::SPtr loadMesh(Node*               parentNode,
 /// Create a skinning map between mesh and armature (is a distance map)
 /// This uses a Shepard shape function method
 // ---------------------------------------------------------------------
+#ifndef SOFA_CUDA
 void skinMesh(Node *                              parentNode,
               MechanicalObject<Rigid3Types>::SPtr articulatedFrame,
-              MechanicalObject<Vec3Types>::SPtr   mechanicalObject,
+              MechanicalObject<SofaVec3Types>::SPtr   mechanicalObject,
               vtkPolyData *                       armature,
               vtkPolyData *                       polyMesh,
               int                                 label = 0
               )
 {
-  typedef SkinningMapping<Rigid3Types, Vec3Types> SkinningMappingType;
+  typedef SkinningMapping<Rigid3Types, SofaVec3Types> SkinningMappingType;
+  //typedef BarycentricMapping<Rigid3Types, SofaVec3Types> SkinningMappingType;
 
   vtkSmartPointer<vtkPoints>    points;
   vtkSmartPointer<vtkPointData> data;
@@ -744,16 +775,17 @@ void skinMesh(Node *                              parentNode,
   boneSkinningMapping->setWeights(weights,indices,nbIds);
 
 }
+#endif
 
 /// Create a map between mesh and armature (distance map)
 /// Using barycentric coordinates
 // ---------------------------------------------------------------------
 void mapArticulatedFrameToMesh(Node *                              parentNode,
                                MechanicalObject<Rigid3Types>::SPtr articulatedFrame,
-                               MechanicalObject<Vec3Types>::SPtr   mechanicalObject
+                               MechanicalObject<SofaVec3Types>::SPtr   mechanicalObject
                                )
 {
-  typedef BarycentricMapping<Vec3Types,Rigid3Types> BarycentricMappingType;
+  typedef BarycentricMapping<SofaVec3Types,Rigid3Types> BarycentricMappingType;
   BarycentricMappingType::SPtr barycentricMapping =
     addNew<BarycentricMappingType>(parentNode,"Mapping");
   barycentricMapping->setModels(mechanicalObject.get(), articulatedFrame.get());
@@ -762,7 +794,7 @@ void mapArticulatedFrameToMesh(Node *                              parentNode,
 /// Sets the collision model
 // ---------------------------------------------------------------------
 Node::SPtr createCollisionNode(Node *parentNode, vtkPolyData * polyMesh,
-                               MechanicalObject<Vec3Types> *volumeMesh,
+                               MechanicalObject<SofaVec3Types> *volumeMesh,
                                int label = 0,
                                bool createCollisionSurface = false
                                )
@@ -821,10 +853,11 @@ Node::SPtr createCollisionNode(Node *parentNode, vtkPolyData * polyMesh,
     meshName << "SurfaceMesh" << label;
 
     // Create mechanical object for the mesh vertices
-    MechanicalObject<Vec3Types>::SPtr surfaceMesh =
-      addNew<MechanicalObject<Vec3Types> >(collisionNode,meshName.str());
+    MechanicalObject<SurfaceVec3Types>::SPtr surfaceMesh =
+      addNew<MechanicalObject<SurfaceVec3Types> >(collisionNode,meshName.str());
 
-    copyVertices(points.GetPointer(),surfaceMesh.get());
+    size_t vertices = copyVertices(points.GetPointer(),surfaceMesh.get());
+    std::cout << " Copied vertices: " << vertices << std::endl;
 
     // Topology
     MeshTopology::SPtr meshTopology = addNew<MeshTopology>(collisionNode,
@@ -836,8 +869,8 @@ Node::SPtr createCollisionNode(Node *parentNode, vtkPolyData * polyMesh,
       *meshTopology->seqTriangles.beginEdit();
     triangleArray.reserve(triangles->GetNumberOfCells());
 
-    std::cout << "  Total # of triangles: " << triangles->GetNumberOfCells() <<
-      std::endl;
+    std::cout << "  Total # of triangles: "
+              << triangles->GetNumberOfCells() << std::endl;
 
     triangles->InitTraversal();
     vtkNew<vtkIdList> element;
@@ -856,10 +889,10 @@ Node::SPtr createCollisionNode(Node *parentNode, vtkPolyData * polyMesh,
       }
 
     // Use a barycentric mapping to map surface to volume mesh
-    BarycentricMapping3_to_3::SPtr mechMapping =
-      addNew<BarycentricMapping3_to_3>(
+    SofaBarycentricMapping::SPtr meshMapping =
+      addNew<SofaBarycentricMapping>(
         collisionNode,"collisionMapping");
-    mechMapping->setModels(volumeMesh, surfaceMesh.get());
+    meshMapping->setModels(volumeMesh, surfaceMesh.get());
     }
 
   addCollisionModels(collisionNode,modelTypes);
@@ -949,6 +982,10 @@ int main(int argc, char** argv)
 {
   PARSE_ARGS;
 
+  if (Verbose)
+    {
+    setenv("CUDA_VERBOSE", "1", 1);
+    }
   double dt = 0.01;
   sofa::simulation::setSimulation(new sofa::simulation::graph::DAGSimulation());
 
@@ -1004,10 +1041,10 @@ int main(int argc, char** argv)
   Node::SPtr anatomicalMesh = sceneNode->createChild("AnatomicalMesh");
 
   // Create mesh dof
-  Vec3Types::VecReal                youngModulus;
-  MechanicalObject<Vec3Types>::SPtr posedMesh = loadMesh(
+  SofaVec3Types::VecReal                youngModulus;
+  MechanicalObject<SofaVec3Types>::SPtr posedMesh = loadMesh(
     anatomicalMesh.get(), tetMesh, youngModulus);
-  UniformMass3::SPtr mass = addNew<UniformMass3>(anatomicalMesh.get(),"Mass");
+  SofaUniformMass::SPtr mass = addNew<SofaUniformMass>(anatomicalMesh.get(),"Mass");
   mass->setTotalMass(100);
 
   if (Verbose)
@@ -1057,9 +1094,12 @@ int main(int argc, char** argv)
               << std::endl;
     std::cout << "Skin mesh..." << std::endl;
     }
-  skinMesh(anatomicalMap.get(),articulatedFrame,posedMesh,
-    armature,tetMesh);
-//   mapArticulatedFrameToMesh(anatomicalMap.get(),articulatedFrame,posedMesh);
+#ifdef SOFA_CUDA
+  mapArticulatedFrameToMesh(anatomicalMap.get(),articulatedFrame,posedMesh);
+#else
+  mapArticulatedFrameToMesh(anatomicalMap.get(),articulatedFrame,posedMesh);
+  //skinMesh(anatomicalMap.get(),articulatedFrame,posedMesh, armature,tetMesh);
+#endif
 
   if (Verbose)
     {
