@@ -49,3 +49,8 @@ SEMMacroBuildCLI(
   TARGET_LIBRARIES ${ITK_LIBRARIES} vtkIO vtkGraphics ${MODULE_TARGET_LIBRARIES}
   EXECUTABLE_ONLY
   )
+get_target_property(compile_flags ${CLP}Lib COMPILE_FLAGS)
+set(compile_flags "${compile_flags} -Wno-overloaded-virtual")
+set_target_properties(${MODULE_NAME}Lib PROPERTIES COMPILE_FLAGS ${compile_flags})
+set_target_properties(${MODULE_NAME} PROPERTIES COMPILE_FLAGS "-Wno-overloaded-virtual")
+
