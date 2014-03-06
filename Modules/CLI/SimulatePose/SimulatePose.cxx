@@ -764,7 +764,7 @@ void mapArticulatedFrameToMesh(Node *                              parentNode,
 Node::SPtr createCollisionNode(Node *parentNode, vtkPolyData * polyMesh,
                                MechanicalObject<Vec3Types> *volumeMesh,
                                int label = 0,
-                               bool createCollisionSurface = false
+                               bool createCollisionSurface = true
                                )
 {
   std::cout << "Creating collision node..." << std::endl;
@@ -788,12 +788,13 @@ Node::SPtr createCollisionNode(Node *parentNode, vtkPolyData * polyMesh,
 
 
     // Load mesh
-    vtkSmartPointer<vtkPoints>    points;
-    vtkSmartPointer<vtkCellArray> triangles;
-
+    vtkPoints* points = 0;
+    vtkCellArray* triangles =0;
+    vtkSmartPointer<vtkThreshold> meshThreshold;
+    vtkSmartPointer<vtkTriangleFilter> extractTriangles;
     if(label != 0)
       {
-      vtkSmartPointer<vtkThreshold> meshThreshold = vtkThreshold::New();
+      meshThreshold = vtkSmartPointer<vtkThreshold>::New();
       meshThreshold->SetInput(polyMesh);
       meshThreshold->ThresholdBetween(label,label);
       meshThreshold->Update();
@@ -804,8 +805,7 @@ Node::SPtr createCollisionNode(Node *parentNode, vtkPolyData * polyMesh,
       }
     else
       {
-      vtkSmartPointer<vtkTriangleFilter> extractTriangles =
-        vtkTriangleFilter::New();
+      extractTriangles = vtkSmartPointer<vtkTriangleFilter>::New();
       extractTriangles->SetInput(polyMesh);
       extractTriangles->Update();
 
@@ -822,7 +822,7 @@ Node::SPtr createCollisionNode(Node *parentNode, vtkPolyData * polyMesh,
     MechanicalObject<Vec3Types>::SPtr surfaceMesh =
       addNew<MechanicalObject<Vec3Types> >(collisionNode,meshName.str());
 
-    copyVertices(points.GetPointer(),surfaceMesh.get());
+    copyVertices(points,surfaceMesh.get());
 
     // Topology
     MeshTopology::SPtr meshTopology = addNew<MeshTopology>(collisionNode,
@@ -838,18 +838,19 @@ Node::SPtr createCollisionNode(Node *parentNode, vtkPolyData * polyMesh,
       std::endl;
 
     triangles->InitTraversal();
-    vtkNew<vtkIdList> element;
-    vtkIdType         cellId = 0;
-    while(triangles->GetNextCell(element.GetPointer()))
+    vtkIdType* element;
+    vtkIdType elementSize;
+    vtkIdType cellId = 0;
+    while(triangles->GetNextCell(elementSize, element))
       {
-      if(element->GetNumberOfIds() != 3)
+      if(elementSize != 3)
         {
-        std::cerr << " Error: Non-triangle encountered." << std::endl;
-        cellId++;
+        std::cerr << " Error: Non-triangle encountered at cell "
+                  << cellId << "." << std::endl;
         continue;
         }
-      MeshTopology::Triangle t(element->GetId(0),
-                               element->GetId(1),element->GetId(2));
+      cellId++;
+      MeshTopology::Triangle t(element[0], element[1], element[2]);
       triangleArray.push_back(t);
       }
 
@@ -943,6 +944,7 @@ void initMesh(vtkPolyData* outputPolyData, vtkPolyData* inputPolyData,
 
 }
 
+//------------------------------------------------------------------------------
 int main(int argc, char** argv)
 {
   PARSE_ARGS;
