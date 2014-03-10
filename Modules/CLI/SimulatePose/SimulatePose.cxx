@@ -218,32 +218,43 @@ vtkQuaterniond computeOrientationFromReferenceAxis(Vector3 &head,
 // Add the collision model used to resolve collisions
 // ---------------------------------------------------------------------
 void addCollisionModels(Node::SPtr                      collisionNode,
-                        const std::vector<std::string> &elements,
-                        SReal                           stiffness = 10
+                        const std::vector<std::string> &elements
                         )
 {
+  double stiffness = 30.;//10.; // 30.
+  double friction = 0.;
+  double proximity = 0.3;
   for (size_t i=0; i < elements.size(); ++i)
     {
     if (elements[i] == "Triangle")
       {
       TriangleModel::SPtr triModel = addNew<TriangleModel>(collisionNode,
         "TriangleCollision");
+      triModel->bothSide.setValue(true);
       triModel->setSelfCollision(true);
       triModel->setContactStiffness(stiffness);
+      triModel->setContactFriction(friction);
+      triModel->setProximity(proximity);
       }
     else if(elements[i] == "Line")
       {
       LineModel::SPtr lineModel = addNew<LineModel>(collisionNode,
         "LineCollision");
+      lineModel->bothSide.setValue(true);
       lineModel->setSelfCollision(true);
       lineModel->setContactStiffness(stiffness);
+      lineModel->setContactFriction(friction);
+      lineModel->setProximity(proximity);
       }
     else if (elements[i] == "Point")
       {
       PointModel::SPtr pointModel = addNew<PointModel>(collisionNode,
         "PointCollision");
+      pointModel->bothSide.setValue(true);
       pointModel->setSelfCollision(true);
       pointModel->setContactStiffness(stiffness);
+      pointModel->setContactFriction(friction);
+      pointModel->setProximity(proximity);
       }
     else
       {
@@ -434,14 +445,15 @@ void getBoneCoordinates(
 
     finalPose.getCenter() = rotation*
                             (centerOfMass-parentJoint)+parentJoint+translation;
+
     Matrix3 orientation;
     restPosition.getOrientation().toMatrix(orientation);
     finalPose.getOrientation().fromMatrix(rotation*orientation);
 
     skeletonJoints.push_back(SkeletonJoint<Rigid3Types>());
     SkeletonJoint<Rigid3Types>& skeletonJoint = skeletonJoints.back();
-    skeletonJoint.addChannel(restPosition,0.);
-    skeletonJoint.addChannel(finalPose,1.);
+    skeletonJoint.addChannel(restPosition, 0.);
+    skeletonJoint.addChannel(finalPose, 1.);
     skeletonBones.push_back(edgeId);
 
     std::cout << "Bone " << skeletonJoint << std::endl;
@@ -623,14 +635,13 @@ MechanicalObject<Vec3Types>::SPtr loadMesh(Node*               parentNode,
     std::cerr << "Error: No material parameters data array in mesh" << std::endl;
     }
 
+  int c = 0;
   vtkNew<vtkIdList> element;
-  vtkIdType         cellId = 0;
-  while(tetras->GetNextCell(element.GetPointer()))
+  for (vtkIdType cellId = 0; tetras->GetNextCell(element.GetPointer());++cellId)
     {
     if(element->GetNumberOfIds() != 4)
       {
       std::cerr << "Error: Non-tetrahedron encountered." << std::endl;
-      cellId++;
       continue;
       }
     tetrahedra.push_back(MeshTopology::Tetra(element->GetId(0),
@@ -774,7 +785,8 @@ Node::SPtr createCollisionNode(Node *parentNode, vtkPolyData * polyMesh,
   modelTypes.push_back("Line");
   modelTypes.push_back("Point");
 
-  Node::SPtr collisionNode = parentNode->createChild("collisionNode");
+  //Node::SPtr collisionNode(parentNode, false);//
+  Node::SPtr collisionNode = parentNode;
   // Create a new node for a collision model if a surface is given
   if (createCollisionSurface)
     {
@@ -786,7 +798,7 @@ Node::SPtr createCollisionNode(Node *parentNode, vtkPolyData * polyMesh,
       return collisionNode;
       }
 
-
+    collisionNode = parentNode->createChild("collisionNode");
     // Load mesh
     vtkPoints* points = 0;
     vtkCellArray* triangles =0;
@@ -813,8 +825,6 @@ Node::SPtr createCollisionNode(Node *parentNode, vtkPolyData * polyMesh,
       triangles = extractTriangles->GetOutput()->GetPolys();
       }
 
-    double materialParameters[2] = {0};
-
     std::stringstream meshName;
     meshName << "SurfaceMesh" << label;
 
@@ -840,8 +850,8 @@ Node::SPtr createCollisionNode(Node *parentNode, vtkPolyData * polyMesh,
     triangles->InitTraversal();
     vtkIdType* element;
     vtkIdType elementSize;
-    vtkIdType cellId = 0;
-    while(triangles->GetNextCell(elementSize, element))
+
+    for(vtkIdType cellId = 0; triangles->GetNextCell(elementSize, element); ++cellId)
       {
       if(elementSize != 3)
         {
@@ -860,8 +870,12 @@ Node::SPtr createCollisionNode(Node *parentNode, vtkPolyData * polyMesh,
         collisionNode,"collisionMapping");
     mechMapping->setModels(volumeMesh, surfaceMesh.get());
     }
-
   addCollisionModels(collisionNode,modelTypes);
+  sofa::helper::vector< BaseNode* > parents = collisionNode->getParents();
+  for (int i=0; i < parents.size(); ++i)
+    {
+    std::cout << "Parent " << i << ": " << parents[i]->name.getValue() << std::endl;
+    }
   std::cout << "done creating collision node." << std::endl;
 
   return collisionNode;
@@ -1024,6 +1038,7 @@ int main(int argc, char** argv)
     std::cout << "Create finite element model..." << std::endl;
     }
 
+  //Node::SPtr collisionNode;
   // Collision node
   if (EnableCollision)
     {
@@ -1036,14 +1051,15 @@ int main(int argc, char** argv)
       std::cout << "Create collision node..." << std::endl;
       }
     createCollisionNode(anatomicalMesh.get(),
-                        surfaceMesh,posedMesh.get());
+                        //collisionNode = createCollisionNode(sceneNode.get(),
+                                                   surfaceMesh,posedMesh.get());
     }
 
   if (Verbose)
     {
     std::cout << "************************************************************"
               << std::endl;
-    std::cout << "Create anatomical map..." << std::endl;
+    std::cout << "Create anatomical map..." << anatomicalMesh->name.getValue() << std::endl;
     }
 
   // Create a constrained articulated frame
@@ -1080,7 +1096,13 @@ int main(int argc, char** argv)
   sofa::simulation::getSimulation()->exportXML(root.get(),"scene.scn");
   sofa::simulation::getSimulation()->init(root.get());
   root->setAnimate(true);
-
+/*
+  sofa::helper::vector< BaseNode* > parents = collisionNode->getParents();
+  for (int i=0; i < parents.size(); ++i)
+    {
+    std::cout << ">>>>>> Collision parent " << i << ": " << parents[i]->name.getValue() << std::endl;
+    }
+*/
   if (Verbose)
     {
     std::cout << "Animate..." << std::endl;
