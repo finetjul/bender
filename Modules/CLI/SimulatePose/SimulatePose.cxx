@@ -62,6 +62,7 @@
 #include <vtkCellArray.h>
 #include <vtkCellCenters.h>
 #include <vtkCellData.h>
+#include <vtkCellDataToPointData.h>
 #include <vtkDataArray.h>
 #include <vtkDataSetSurfaceFilter.h>
 #include <vtkFloatArray.h>
@@ -221,9 +222,10 @@ void addCollisionModels(Node::SPtr                      collisionNode,
                         const std::vector<std::string> &elements
                         )
 {
-  double stiffness = 30.;//10.; // 30.
+  double stiffness = 40.;//10.; // 30.
   double friction = 0.;
   double proximity = 0.3;
+  double restitution = 0.1;
   for (size_t i=0; i < elements.size(); ++i)
     {
     if (elements[i] == "Triangle")
@@ -234,6 +236,7 @@ void addCollisionModels(Node::SPtr                      collisionNode,
       triModel->setSelfCollision(true);
       triModel->setContactStiffness(stiffness);
       triModel->setContactFriction(friction);
+      triModel->setContactRestitution(restitution);
       triModel->setProximity(proximity);
       }
     else if(elements[i] == "Line")
@@ -244,6 +247,7 @@ void addCollisionModels(Node::SPtr                      collisionNode,
       lineModel->setSelfCollision(true);
       lineModel->setContactStiffness(stiffness);
       lineModel->setContactFriction(friction);
+      lineModel->setContactRestitution(restitution);
       lineModel->setProximity(proximity);
       }
     else if (elements[i] == "Point")
@@ -254,6 +258,7 @@ void addCollisionModels(Node::SPtr                      collisionNode,
       pointModel->setSelfCollision(true);
       pointModel->setContactStiffness(stiffness);
       pointModel->setContactFriction(friction);
+      pointModel->setContactRestitution(restitution);
       pointModel->setProximity(proximity);
       }
     else
@@ -270,6 +275,7 @@ Node::SPtr createRootWithCollisionPipeline(const std::string& responseType = std
                                              "default"))
 {
   typedef LocalMinDistance ProximityType;
+  //typedef MinProximityIntersection ProximityType;
   Node::SPtr root = getSimulation()->createNewGraph("root");
 
   //Components for collision management
@@ -290,8 +296,8 @@ Node::SPtr createRootWithCollisionPipeline(const std::string& responseType = std
   ProximityType::SPtr detectionProximity =
     sofa::core::objectmodel::New<ProximityType>();
   detectionProximity->setName("Proximity");
-  detectionProximity->setAlarmDistance(0.1);     //warning distance
-  detectionProximity->setContactDistance(0.07);   //min distance before setting a spring to create a repulsion
+  detectionProximity->setAlarmDistance(0.0001);     //warning distance
+  detectionProximity->setContactDistance(0.000001);   //min distance before setting a spring to create a repulsion
   root->addObject(detectionProximity);
 
   //--> adding contact manager
@@ -651,6 +657,7 @@ MechanicalObject<Vec3Types>::SPtr loadMesh(Node*               parentNode,
       {
       double parameters[2] = {0};
       materialParameters->GetTuple(cellId, parameters);
+      //youngModulus.push_back(parameters[0] <= 200 ? 1000 : 10000);
       youngModulus.push_back(parameters[0]);
       }
     }
@@ -672,23 +679,23 @@ void skinMesh(Node *                              parentNode,
   typedef SkinningMapping<Rigid3Types, Vec3Types> SkinningMappingType;
 
   vtkSmartPointer<vtkPoints>    points;
-  vtkSmartPointer<vtkPointData> data;
+  vtkSmartPointer<vtkPointData> pointData;
 
   if(label != 0)
     {
-    vtkSmartPointer<vtkThreshold> meshThreshold = vtkThreshold::New();
+    vtkSmartPointer<vtkThreshold> meshThreshold = vtkSmartPointer<vtkThreshold>::New();
     meshThreshold->SetInput(polyMesh);
     meshThreshold->ThresholdBetween(label,label);
     meshThreshold->Update();
 
     vtkUnstructuredGrid *mesh = meshThreshold->GetOutput();
     points = mesh->GetPoints();
-    data   = mesh->GetPointData();
+    pointData   = mesh->GetPointData();
     }
   else
     {
     points = polyMesh->GetPoints();
-    data   = polyMesh->GetPointData();
+    pointData = polyMesh->GetPointData();
     }
 
   SkinningMappingType::SPtr boneSkinningMapping =
@@ -712,17 +719,36 @@ void skinMesh(Node *                              parentNode,
   nbIds.resize(numberOfVertices,0);
   weightSum.resize(numberOfVertices,0.);
 
+  vtkIntArray* materialIds = vtkIntArray::SafeDownCast(polyMesh->GetCellData()->GetArray("MaterialId"));
+  std::cout << "Material IDS: " << materialIds << std::endl;
+
+  vtkSmartPointer<vtkIdList> cellIdList =
+    vtkSmartPointer<vtkIdList>::New();
   for(vtkIdType i = 0; i < numberOfBones; ++i)
     {
-    vtkFloatArray *weightArray = vtkFloatArray::SafeDownCast(data->GetArray(i));
-    if(weightArray->GetNumberOfTuples() != numberOfVertices || !weightArray)
+    vtkFloatArray *weightArray = vtkFloatArray::SafeDownCast(pointData->GetArray(i));
+    if( !weightArray || weightArray->GetNumberOfTuples() != numberOfVertices)
       {
       std::cerr << "Error extracting weight array." << std::endl;
-      return;
+      continue;
       }
 
     for (vtkIdType j = 0; j < numberOfVertices; ++j)
       {
+      polyMesh->GetPointCells(j, cellIdList);
+      bool hasWeight = false;
+      for(vtkIdType c = 0; c < cellIdList->GetNumberOfIds(); ++c)
+        {
+        if (materialIds->GetValue(c) != 1)
+          {
+          hasWeight = true;
+          }
+        }
+      if (!hasWeight)
+        {
+        //continue;
+        }
+
       float weight = weightArray->GetValue(j);
       if (weight < 0.001)
         {
@@ -742,6 +768,9 @@ void skinMesh(Node *                              parentNode,
     {
     if(weightSum[i] == 0.)
       {
+      //indices[i].push_back(0);
+      //weights[i].push_back(0.);
+
       if (++weightErrorCount < 100)
         {
         std::cerr << "Error: Vertex " << i << " has no weight." << std::endl;
@@ -1051,8 +1080,7 @@ int main(int argc, char** argv)
       std::cout << "Create collision node..." << std::endl;
       }
     createCollisionNode(anatomicalMesh.get(),
-                        //collisionNode = createCollisionNode(sceneNode.get(),
-                                                   surfaceMesh,posedMesh.get());
+                        surfaceMesh,posedMesh.get());
     }
 
   if (Verbose)
@@ -1093,7 +1121,12 @@ int main(int argc, char** argv)
     std::cout << "Init..." << std::endl;
     }
   // Run simulation time steps
-  sofa::simulation::getSimulation()->exportXML(root.get(),"scene.scn");
+  if (Debug)
+    {
+    std::string sceneFileName = OutputTetMesh;
+    sceneFileName += "Scene.scn";
+    sofa::simulation::getSimulation()->exportXML(root.get(), sceneFileName.c_str());
+    }
   sofa::simulation::getSimulation()->init(root.get());
   root->setAnimate(true);
 /*

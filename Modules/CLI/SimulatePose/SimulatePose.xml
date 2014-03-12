@@ -88,5 +88,13 @@
       <description><![CDATA[Print verbose outputs.]]></description>
       <default>false</default>
     </boolean>
+    <boolean>
+      <name>Debug</name>
+      <label>Debug</label>
+      <longflag>--debug</longflag>
+      <description><![CDATA[Generate debug information (e.g sofa scene).]]></description>
+      <default>false</default>
+    </boolean>
+
   </parameters>
 </executable>
