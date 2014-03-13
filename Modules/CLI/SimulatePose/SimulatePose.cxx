@@ -107,29 +107,120 @@ typename Component::SPtr addNew( Node::SPtr parentNode, std::string name="" )
   return component;
 }
 
+// ---------------------------------------------------------------------
+bool isCellInLabel(vtkIdType cellId, vtkIntArray* materialIds, int filterLabel)
+{
+  return materialIds->GetValue(cellId) == filterLabel;
+}
+
+// ---------------------------------------------------------------------
+bool isPointInLabel(vtkIdList* cellIdList, vtkIntArray* materialIds, int filterLabel)
+{
+  // Search if the point belongs to a cell that has the material Id filterLabel.
+  for(vtkIdType c = 0; c < cellIdList->GetNumberOfIds(); ++c)
+    {
+    if (materialIds->GetValue(cellIdList->GetId(c)) == filterLabel)
+      {
+      return true;
+      }
+    }
+  return false;
+}
+
+// ---------------------------------------------------------------------
+bool isPointInLabel(vtkPolyData* polyMesh, int filterLabel, vtkIdType pointId)
+{
+  vtkIntArray* materialIds = vtkIntArray::SafeDownCast(
+    polyMesh->GetCellData()->GetArray("MaterialId"));
+  vtkSmartPointer<vtkIdList> cellIdList =
+    vtkSmartPointer<vtkIdList>::New();
+  polyMesh->GetPointCells(pointId, cellIdList);
+  return isPointInLabel(cellIdList, materialIds, filterLabel);
+}
+
+// ---------------------------------------------------------------------
+vtkIdType countNumberOfPointsInLabel(
+  vtkPolyData* polyMesh, int filterLabel)
+{
+  vtkIdType count = 0;
+
+  vtkPoints* points = polyMesh->GetPoints();
+  vtkIntArray* materialIds = vtkIntArray::SafeDownCast(
+    polyMesh->GetCellData()->GetArray("MaterialId"));
+  if (!points || !materialIds)
+    {
+    std::cerr << "No material ids" << std::endl;
+    return count;
+    }
+  const vtkIdType numberOfPoints = points->GetNumberOfPoints();
+  vtkSmartPointer<vtkIdList> cellIdList =
+    vtkSmartPointer<vtkIdList>::New();
+  for (vtkIdType i = 0; i < numberOfPoints; ++i)
+    {
+    polyMesh->GetPointCells(i, cellIdList);
+    if (isPointInLabel(cellIdList, materialIds, filterLabel))
+      {
+      ++count;
+      }
+    }
+  return count;
+}
+
+
 // Copy point positions from vtk to a mechanical object
 // ---------------------------------------------------------------------
-void copyVertices( vtkPoints *                  points,
-                   MechanicalObject<Vec3Types>* mechanicalMesh )
+std::map<vtkIdType, vtkIdType> copyVertices( vtkPoints* points,
+                                             MechanicalObject<Vec3Types>* mechanicalMesh,
+                                             int filter = 0, int label = 0,
+                                             vtkPolyData* polyMesh = 0)
 {
-  mechanicalMesh->resize(points->GetNumberOfPoints());
+  std::map<vtkIdType,vtkIdType> m;
+  vtkIdType numberOfPoints = points->GetNumberOfPoints();
+  if (filter > 0 && polyMesh != 0)
+    {
+    vtkIdType numberOfPointWithLabel =
+      countNumberOfPointsInLabel(polyMesh, label);
+    numberOfPoints = (filter == 2) ? numberOfPoints - numberOfPointWithLabel :
+      numberOfPointWithLabel;
+    }
+  vtkIdType meshPointId = mechanicalMesh->getSize() > 1 ? mechanicalMesh->getSize() : 0;
+  std::cout << "Mesh size: " << mechanicalMesh->getSize() << " -> " << meshPointId << std::endl;
+  mechanicalMesh->resize(mechanicalMesh->getSize() + numberOfPoints);
 
-  std::cout << "  Total # of vertices: " << points->GetNumberOfPoints() <<
-    std::endl;
+  std::cout << "  Total # of points for label " << (filter > 0 ? label : -1) << ": "
+            << numberOfPoints << " out of " << points->GetNumberOfPoints()
+            << " points." << std::endl;
 
   Data<MechanicalObject<Vec3Types>::VecCoord>* x =
     mechanicalMesh->write(VecCoordId::position());
 
   // Copy vertices from vtk mesh
   MechanicalObject<Vec3Types>::VecCoord &vertices = *x->beginEdit();
+
   for(vtkIdType i = 0, end = points->GetNumberOfPoints(); i < end; ++i)
     {
+    if ((filter == 1 && !isPointInLabel(polyMesh, label, i)) ||
+        (filter == 2 && isPointInLabel(polyMesh, label, i)) )
+      {
+      continue;
+      }
+    if (i == 1)
+      {
+      std::cout << "Point 1 is here with filter " << filter << " and label: " << label << std::endl;
+      }
     Vector3 point;
     points->GetPoint(i,point.ptr());
-    vertices[i] = point;
+    m[i] = meshPointId;
+    vertices[meshPointId++] = point;
 //     std::cout << "vertex[" << i << "] = " << vertices[i] << std::endl;
     }
+  if (meshPointId != numberOfPoints)
+    {
+    std::cerr << "Failed to copy vertices: " << numberOfPoints << " vs "
+              << meshPointId << std::endl;
+    }
   x->endEdit();
+  return m;
 }
 
 
@@ -576,6 +667,71 @@ void createFiniteElementModel(Node *              parentNode,
   femSolver->_youngModulus.setValue(youngModulus);
 }
 
+// ---------------------------------------------------------------------
+MechanicalObject<Vec3Types>::SPtr loadBoneMesh(Node*               parentNode,
+                                               vtkPolyData *       polyMesh,
+                                               int                 boneLabel = 209)
+{
+  // load mesh
+  vtkSmartPointer<vtkPoints>    points;
+  vtkSmartPointer<vtkCellArray> tetras;
+  vtkSmartPointer<vtkCellData>  data;
+
+  points = polyMesh->GetPoints();
+  tetras = polyMesh->GetPolys();
+  data   = polyMesh->GetCellData();
+
+  std::stringstream meshName;
+  meshName << "BoneMesh";
+
+  // Create mechanical object (dof) for the mesh and extract material parameters
+  MechanicalObject<Vec3Types>::SPtr mechanicalMesh =
+    addNew<MechanicalObject<Vec3Types> >(parentNode,meshName.str());
+
+  std::map<vtkIdType, vtkIdType> m =
+    copyVertices(points.GetPointer(),mechanicalMesh.get(), /*filter =*/1, boneLabel, polyMesh);
+
+  // Create the MeshTopology
+  MeshTopology::SPtr meshTopology = addNew<MeshTopology>(parentNode,"BoneTopology");
+  meshTopology->seqPoints.setParent(&mechanicalMesh->x);
+
+  // Copy tetrahedra array from vtk cell array
+  MeshTopology::SeqTetrahedra& tetrahedra =
+    *meshTopology->seqTetrahedra.beginEdit();
+  // \fixme needed ?
+  //tetrahedra.reserve(tetras->GetNumberOfCells());
+
+  vtkIntArray* materialIds = vtkIntArray::SafeDownCast(
+    polyMesh->GetCellData()->GetArray("MaterialId"));
+
+  tetras->InitTraversal();
+
+  vtkNew<vtkIdList> element;
+  vtkIdType cellCount = 0;
+  for (vtkIdType cellId = 0; tetras->GetNextCell(element.GetPointer());++cellId)
+    {
+    if(element->GetNumberOfIds() != 4)
+      {
+      std::cerr << "Error: Non-tetrahedron encountered." << std::endl;
+      continue;
+      }
+    if (!isCellInLabel(cellId, materialIds, boneLabel))
+      {
+      continue;
+      }
+    tetrahedra.push_back(MeshTopology::Tetra(m[element->GetId(0)],
+                                             m[element->GetId(1)],
+                                             m[element->GetId(2)],
+                                             m[element->GetId(3)]));
+    ++cellCount;
+    }
+  meshTopology->seqTetrahedra.endEdit();
+
+  std::cout << "Total # of bone tetrahedra: " << cellCount
+            << " over " << tetras->GetNumberOfCells() << " cells" << std::endl;
+  return mechanicalMesh;
+}
+
 
 /// Loads a vtk tetrahedral polymesh and creates a mechanical object and
 /// the corresponding MeshTopology.
@@ -583,7 +739,7 @@ void createFiniteElementModel(Node *              parentNode,
 MechanicalObject<Vec3Types>::SPtr loadMesh(Node*               parentNode,
                                            vtkPolyData *       polyMesh,
                                            Vec3Types::VecReal &youngModulus,
-                                           int                 label = 0
+                                           int                 boneLabel = -1
                                            )
 {
   // load mesh
@@ -591,44 +747,35 @@ MechanicalObject<Vec3Types>::SPtr loadMesh(Node*               parentNode,
   vtkSmartPointer<vtkCellArray> tetras;
   vtkSmartPointer<vtkCellData>  data;
 
-  if(label != 0)
-    {
-    vtkNew<vtkThreshold> meshThreshold;
-    meshThreshold->SetInput(polyMesh);
-    meshThreshold->ThresholdBetween(label,label);
-    meshThreshold->Update();
-
-    vtkUnstructuredGrid *mesh = meshThreshold->GetOutput();
-    points = mesh->GetPoints();
-    tetras = mesh->GetCells();
-    data   = mesh->GetCellData();
-    }
-  else
-    {
-    points = polyMesh->GetPoints();
-    tetras = polyMesh->GetPolys();
-    data   = polyMesh->GetCellData();
-    }
+  points = polyMesh->GetPoints();
+  tetras = polyMesh->GetPolys();
+  data   = polyMesh->GetCellData();
 
   std::stringstream meshName;
-  meshName << "Mesh" << label;
+  meshName << "Mesh";
 
   // Create mechanical object (dof) for the mesh and extract material parameters
   MechanicalObject<Vec3Types>::SPtr mechanicalMesh =
     addNew<MechanicalObject<Vec3Types> >(parentNode,meshName.str());
 
-  copyVertices(points.GetPointer(),mechanicalMesh.get());
+  std::map<vtkIdType, vtkIdType> boneMap;
+  if (boneLabel >= 0)
+    {
+    boneMap = copyVertices(points.GetPointer(),mechanicalMesh.get(), /*filter=*/ 1, boneLabel, polyMesh);
+    }
+  std::map<vtkIdType, vtkIdType> skinMap =
+    copyVertices(points.GetPointer(),mechanicalMesh.get(),
+                 /*filter=*/ boneLabel >= 0 ? 2 : 0, boneLabel, polyMesh);
 
   // Create the MeshTopology
-  MeshTopology::SPtr meshTopology = addNew<MeshTopology>(parentNode,
-    "Topology");
+  MeshTopology::SPtr meshTopology = addNew<MeshTopology>(parentNode, "Topology");
   meshTopology->seqPoints.setParent(&mechanicalMesh->x);
 
   // Copy tetrahedra array from vtk cell array
   MeshTopology::SeqTetrahedra& tetrahedra =
     *meshTopology->seqTetrahedra.beginEdit();
-  tetrahedra.reserve(tetras->GetNumberOfCells());
-  youngModulus.reserve(tetras->GetNumberOfCells());
+  //tetrahedra.reserve(tetras->GetNumberOfCells());
+  //youngModulus.reserve(tetras->GetNumberOfCells());
 
   std::cout << "Total # of tetrahedra: " << tetras->GetNumberOfCells()
             << std::endl;
@@ -640,8 +787,9 @@ MechanicalObject<Vec3Types>::SPtr loadMesh(Node*               parentNode,
     {
     std::cerr << "Error: No material parameters data array in mesh" << std::endl;
     }
+  vtkIntArray* materialIds = vtkIntArray::SafeDownCast(
+    data->GetArray("MaterialId"));
 
-  int c = 0;
   vtkNew<vtkIdList> element;
   for (vtkIdType cellId = 0; tetras->GetNextCell(element.GetPointer());++cellId)
     {
@@ -650,9 +798,39 @@ MechanicalObject<Vec3Types>::SPtr loadMesh(Node*               parentNode,
       std::cerr << "Error: Non-tetrahedron encountered." << std::endl;
       continue;
       }
-    tetrahedra.push_back(MeshTopology::Tetra(element->GetId(0),
-        element->GetId(1),element->GetId(2),element->GetId(3)));
+    std::map<vtkIdType, vtkIdType>::const_iterator it;
+    it = boneMap.find(element->GetId(0));
+    vtkIdType p1 = ((it != boneMap.end()) ? it->second : skinMap[element->GetId(0)]);
+    it = boneMap.find(element->GetId(1));
+    vtkIdType p2 = ((it != boneMap.end()) ? it->second : skinMap[element->GetId(1)]);
+    it = boneMap.find(element->GetId(2));
+    vtkIdType p3 = ((it != boneMap.end()) ? it->second : skinMap[element->GetId(2)]);
+    it = boneMap.find(element->GetId(3));
+    vtkIdType p4 = ((it != boneMap.end()) ? it->second : skinMap[element->GetId(3)]);
 
+/*
+    bool useBoneMap = boneLabel >= 0 && isCellInLabel(cellId, materialIds, boneLabel);
+    std::map<vtkIdType, vtkIdType>& pointMap = useBoneMap ? boneMap : skinMap;
+    if (pointMap.find(element->GetId(0)) == pointMap.end() ||
+        pointMap.find(element->GetId(1)) == pointMap.end() ||
+        pointMap.find(element->GetId(2)) == pointMap.end() ||
+        pointMap.find(element->GetId(3)) == pointMap.end())
+      {
+      std::cerr << "Using " << (useBoneMap ? "bone" : "skin") << "map. "
+                << "Can't map 1 or many points in cell " << cellId << ": "
+                << element->GetId(0) << ", " << element->GetId(1) << ", "
+                << element->GetId(2) << ", " << element->GetId(3) << std::endl;
+      std::cerr << "1: " << (pointMap.find(element->GetId(0)) != pointMap.end()) << ", "
+                << "2: " << (pointMap.find(element->GetId(1)) != pointMap.end()) << ", "
+                << "3: " << (pointMap.find(element->GetId(2)) != pointMap.end()) << ", "
+                << "4: " << (pointMap.find(element->GetId(3)) != pointMap.end()) << std::endl;
+      }
+    tetrahedra.push_back(MeshTopology::Tetra(pointMap[element->GetId(0)],
+                                             pointMap[element->GetId(1)],
+                                             pointMap[element->GetId(2)],
+                                             pointMap[element->GetId(3)]));
+*/
+    tetrahedra.push_back(MeshTopology::Tetra(p1, p2, p3, p4));
     if (materialParameters)
       {
       double parameters[2] = {0};
@@ -665,6 +843,111 @@ MechanicalObject<Vec3Types>::SPtr loadMesh(Node*               parentNode,
   return mechanicalMesh;
 }
 
+// ---------------------------------------------------------------------
+void skinBoneMesh(Node *                              parentNode,
+                  MechanicalObject<Rigid3Types>::SPtr articulatedFrame,
+                  MechanicalObject<Vec3Types>::SPtr   mechanicalObject,
+                  vtkPolyData *                       armature,
+                  vtkPolyData *                       polyMesh,
+                  int                                 boneLabel = 203
+)
+{
+  typedef SkinningMapping<Rigid3Types, Vec3Types> SkinningMappingType;
+
+  vtkSmartPointer<vtkPoints>    points;
+  vtkSmartPointer<vtkPointData> pointData;
+
+  points = polyMesh->GetPoints();
+  pointData = polyMesh->GetPointData();
+
+  SkinningMappingType::SPtr boneSkinningMapping =
+    addNew<SkinningMappingType>(parentNode,"SkinningMapping");
+  if(boneSkinningMapping->isMechanical())
+    std::cout << "The map is mechanical." << std::endl;
+
+  boneSkinningMapping->setModels(articulatedFrame.get(),
+    mechanicalObject.get());
+
+  vtkIdType numberOfBones = armature->GetNumberOfCells();
+
+  sofa::helper::vector<SVector<SkinningMappingType::InReal> > weights;
+  sofa::helper::vector<SVector<unsigned int> >                indices;
+  sofa::helper::vector<unsigned int>                          nbIds;
+  sofa::helper::vector<float>                                 weightSum;
+
+  vtkIdType numberOfPoints = points->GetNumberOfPoints();
+  vtkIdType numberOfBonePoints = countNumberOfPointsInLabel(polyMesh, boneLabel);
+  indices.resize(numberOfBonePoints);
+  weights.resize(numberOfBonePoints);
+  nbIds.resize(numberOfBonePoints,0);
+  weightSum.resize(numberOfBonePoints, 0.);
+
+  vtkIntArray* materialIds = vtkIntArray::SafeDownCast(
+    polyMesh->GetCellData()->GetArray("MaterialId"));
+  std::cout << "Material IDS: " << materialIds << std::endl;
+
+  vtkSmartPointer<vtkIdList> cellIdList =
+    vtkSmartPointer<vtkIdList>::New();
+  for(vtkIdType boneId = 0; boneId < numberOfBones; ++boneId)
+    {
+    vtkFloatArray *weightArray = vtkFloatArray::SafeDownCast(pointData->GetArray(boneId));
+    if( !weightArray || weightArray->GetNumberOfTuples() != numberOfPoints)
+      {
+      std::cerr << "Error extracting weight array" << boneId << "." << std::endl;
+      continue;
+      }
+
+    vtkIdType meshPointId = 0;
+    for (vtkIdType pointId = 0; pointId < numberOfPoints; ++pointId)
+      {
+      polyMesh->GetPointCells(pointId, cellIdList);
+      if (!isPointInLabel(cellIdList, materialIds, boneLabel))
+        {
+        continue;
+        }
+
+      float weight = weightArray->GetValue(pointId);
+      if (weight < 0.001)
+        {
+        //++meshPointId;
+        //continue;
+        }
+      weights[meshPointId].push_back(weight);
+      indices[meshPointId].push_back(boneId);
+      ++nbIds[meshPointId];
+      weightSum[meshPointId] += weight;
+      ++meshPointId;
+      }
+    if (meshPointId != numberOfBonePoints)
+      {
+      std::cerr << "Mismatch between the number of bones and the number of points" << std::endl;
+      }
+    }
+
+  // Make sure each vertex has at least one valid associated weight
+  // TODO: Normalize weights -> weights[i][*]/weightSum[i]
+  int weightErrorCount = 0;
+  for(size_t i = 0; i < weightSum.size(); ++i)
+    {
+    if(weightSum[i] < 0.0001)
+      {
+      //indices[i].push_back(0);
+      //weights[i].push_back(0.);
+
+      if (++weightErrorCount < 100)
+        {
+        std::cerr << "Error: Vertex " << i << " has no weight." << std::endl;
+        }
+      }
+    }
+  if (weightErrorCount)
+    {
+    std::cerr << "-> " << weightErrorCount << " voxels with no weight. " << std::endl;
+    }
+  boneSkinningMapping->setWeights(weights,indices,nbIds);
+
+}
+
 /// Create a skinning map between mesh and armature (is a distance map)
 /// This uses a Shepard shape function method
 // ---------------------------------------------------------------------
@@ -674,7 +957,7 @@ void skinMesh(Node *                              parentNode,
               vtkPolyData *                       armature,
               vtkPolyData *                       polyMesh,
               int                                 label = 0
-              )
+)
 {
   typedef SkinningMapping<Rigid3Types, Vec3Types> SkinningMappingType;
 
@@ -739,7 +1022,7 @@ void skinMesh(Node *                              parentNode,
       bool hasWeight = false;
       for(vtkIdType c = 0; c < cellIdList->GetNumberOfIds(); ++c)
         {
-        if (materialIds->GetValue(c) != 1)
+        if (materialIds->GetValue(cellIdList->GetId(c)) != 1)
           {
           hasWeight = true;
           }
@@ -900,11 +1183,11 @@ Node::SPtr createCollisionNode(Node *parentNode, vtkPolyData * polyMesh,
     mechMapping->setModels(volumeMesh, surfaceMesh.get());
     }
   addCollisionModels(collisionNode,modelTypes);
-  sofa::helper::vector< BaseNode* > parents = collisionNode->getParents();
-  for (int i=0; i < parents.size(); ++i)
-    {
-    std::cout << "Parent " << i << ": " << parents[i]->name.getValue() << std::endl;
-    }
+  //sofa::helper::vector< BaseNode* > parents = collisionNode->getParents();
+  //for (vtkIdType i=0; i < parents.size(); ++i)
+  //  {
+  //  std::cout << "Parent " << i << ": " << parents[i]->name.getValue() << std::endl;
+  //  }
   std::cout << "done creating collision node." << std::endl;
 
   return collisionNode;
@@ -1052,15 +1335,69 @@ int main(int argc, char** argv)
   // Time stepper for the armature
   createEulerSolverNode(root.get(),"Implicit");
 
+
+  if (Verbose)
+    {
+    std::cout << "************************************************************"
+              << std::endl;
+    std::cout << "Create anatomical map..." << std::endl;
+    }
+
+  // Create a constrained articulated frame
+  //Node::SPtr skeletalNode = anatomicalNode->createChild("AnatomicalMap");
+  Node::SPtr skeletalNode = sceneNode->createChild("Skeleton");
+
+  if (Verbose)
+    {
+    std::cout << "************************************************************"
+              << std::endl;
+    std::cout << "Create articulated frame..." << std::endl;
+    }
+
+  MechanicalObject<Rigid3Types>::SPtr articulatedFrame =
+    createArticulatedFrame(skeletalNode.get(),
+                           armature, true, !IsArmatureInRAS);
+
+  if (Verbose)
+    {
+    std::cout << "************************************************************"
+              << std::endl;
+    std::cout << "Create bone mesh..." << std::endl;
+    }
+
+  // Node for the bone mesh
+  Node::SPtr boneNode = skeletalNode->createChild("BoneMesh");
+
+  MechanicalObject<Vec3Types>::SPtr boneMesh = loadBoneMesh(
+    boneNode.get(), tetMesh, BoneLabel);
+  UniformMass3::SPtr boneMass = addNew<UniformMass3>(boneNode.get(),"Mass");
+  boneMass->setTotalMass(30);
+
+  if (Verbose)
+    {
+    std::cout << "************************************************************"
+              << std::endl;
+    std::cout << "Create Anatomical mesh..." << std::endl;
+    }
+  //skinMesh(skeletalNode.get(), articulatedFrame, posedMesh,
+  //         armature, tetMesh);
+  skinBoneMesh(boneNode.get(), articulatedFrame, boneMesh,
+               armature, tetMesh, BoneLabel);
+
   // Node for the mesh
-  Node::SPtr anatomicalMesh = sceneNode->createChild("AnatomicalMesh");
+  Node::SPtr anatomicalNode = skeletalNode->createChild("AnatomicalMesh");
 
   // Create mesh dof
   Vec3Types::VecReal                youngModulus;
   MechanicalObject<Vec3Types>::SPtr posedMesh = loadMesh(
-    anatomicalMesh.get(), tetMesh, youngModulus);
-  UniformMass3::SPtr mass = addNew<UniformMass3>(anatomicalMesh.get(),"Mass");
-  mass->setTotalMass(100);
+    anatomicalNode.get(), tetMesh, youngModulus, BoneLabel);
+  UniformMass3::SPtr anatomicalMass = addNew<UniformMass3>(anatomicalNode.get(),"Mass");
+  anatomicalMass->setTotalMass(100);
+
+  IdentityMapping<Vec3Types, Vec3Types>::SPtr identityMapping =
+    addNew<IdentityMapping<Vec3Types, Vec3Types> >(anatomicalNode,
+                                                   "identityMapping");
+  identityMapping->setModels(boneMesh.get(), posedMesh.get());
 
   if (Verbose)
     {
@@ -1072,14 +1409,14 @@ int main(int argc, char** argv)
   if (EnableCollision)
     {
     // Finite element method
-    createFiniteElementModel(anatomicalMesh.get(),youngModulus);
+    createFiniteElementModel(anatomicalNode.get(),youngModulus);
     if (Verbose)
       {
       std::cout << "************************************************************"
                 << std::endl;
       std::cout << "Create collision node..." << std::endl;
       }
-    createCollisionNode(anatomicalMesh.get(),
+    createCollisionNode(anatomicalNode.get(),
                         surfaceMesh,posedMesh.get());
     }
 
@@ -1087,45 +1424,31 @@ int main(int argc, char** argv)
     {
     std::cout << "************************************************************"
               << std::endl;
-    std::cout << "Create anatomical map..." << anatomicalMesh->name.getValue() << std::endl;
-    }
-
-  // Create a constrained articulated frame
-  Node::SPtr anatomicalMap = anatomicalMesh->createChild("AnatomicalMap");
-
-  if (Verbose)
-    {
-    std::cout << "************************************************************"
-              << std::endl;
-    std::cout << "Create articulated frame..." << std::endl;
-    }
-
-  MechanicalObject<Rigid3Types>::SPtr articulatedFrame =
-    createArticulatedFrame(anatomicalMap.get(),
-                           armature, true, !IsArmatureInRAS);
-
-  if (Verbose)
-    {
-    std::cout << "************************************************************"
-              << std::endl;
     std::cout << "Skin mesh..." << std::endl;
     }
-  skinMesh(anatomicalMap.get(),articulatedFrame,posedMesh,
-    armature,tetMesh);
+  //skinMesh(anatomicalMap.get(), articulatedFrame, posedMesh,
+  //         armature, tetMesh);
+  //skinBoneMesh(boneNode.get(), articulatedFrame, boneMesh,
+  //             armature, tetMesh, BoneLabel);
+
 //   mapArticulatedFrameToMesh(anatomicalMap.get(),articulatedFrame,posedMesh);
 
   if (Verbose)
     {
     std::cout << "************************************************************"
               << std::endl;
-    std::cout << "Init..." << std::endl;
     }
   // Run simulation time steps
   if (Debug)
     {
     std::string sceneFileName = OutputTetMesh;
     sceneFileName += "Scene.scn";
+    std::cout << "Write scene at " << sceneFileName << std::endl;
     sofa::simulation::getSimulation()->exportXML(root.get(), sceneFileName.c_str());
+    }
+  if (Verbose)
+    {
+    std::cout << "Init..." << std::endl;
     }
   sofa::simulation::getSimulation()->init(root.get());
   root->setAnimate(true);
@@ -1151,7 +1474,7 @@ int main(int argc, char** argv)
     //sofa::simulation::getSimulation()->animate(root.get());
     }
   vtkNew<vtkPolyData> posedSurface;
-  initMesh(posedSurface.GetPointer(), tetMesh, anatomicalMesh);
+  initMesh(posedSurface.GetPointer(), tetMesh, anatomicalNode);
   if (!IsMeshInRAS)
     {
     vtkNew<vtkTransform> transform;

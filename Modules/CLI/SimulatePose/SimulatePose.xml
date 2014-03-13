@@ -60,6 +60,13 @@
       <description><![CDATA[Enable/Disable collision detection. This slows the process time by multiple order of magnitudes.]]></description>
       <default>3</default>
     </integer>
+    <integer>
+      <name>BoneLabel</name>
+      <label>Bone label</label>
+      <longflag>--bone</longflag>
+      <description><![CDATA[Label of the bone.]]></description>
+      <default>2</default>
+    </integer>
   </parameters>
   <parameters advanced="true">
     <label>Advanced</label>
