@@ -24,6 +24,7 @@
 #include "vtkQuaternion.h"
 
 // SOFA includes
+#include <sofa/component/collision/BaseContactMapper.h>
 #include <sofa/component/collision/BruteForceDetection.h>
 #include <sofa/component/collision/DefaultCollisionGroupManager.h>
 #include <sofa/component/collision/DefaultContactManager.h>
@@ -46,6 +47,8 @@
 #include <sofa/helper/vector.h>
 #include <sofa/simulation/common/Node.h>
 #include <sofa/simulation/graph/DAGSimulation.h>
+#include <sofa/gui/GUIManager.h>
+#include <sofa/gui/Main.h>
 
 // SofaCUDA includes
 #ifdef SOFA_CUDA
@@ -185,7 +188,7 @@ std::map<vtkIdType, vtkIdType> copyVertices( vtkPoints* points,
     }
   vtkIdType meshPointId = mechanicalMesh->getSize() > 1 ? mechanicalMesh->getSize() : 0;
   std::cout << "Mesh size: " << mechanicalMesh->getSize() << " -> " << meshPointId << std::endl;
-  mechanicalMesh->resize(mechanicalMesh->getSize() + numberOfPoints);
+  mechanicalMesh->resize(numberOfPoints);
 
   std::cout << "  Total # of points for label " << (filter > 0 ? label : -1) << ": "
             << numberOfPoints << " out of " << points->GetNumberOfPoints()
@@ -203,10 +206,6 @@ std::map<vtkIdType, vtkIdType> copyVertices( vtkPoints* points,
         (filter == 2 && isPointInLabel(polyMesh, label, i)) )
       {
       continue;
-      }
-    if (i == 1)
-      {
-      std::cout << "Point 1 is here with filter " << filter << " and label: " << label << std::endl;
       }
     Vector3 point;
     points->GetPoint(i,point.ptr());
@@ -466,12 +465,13 @@ Node::SPtr createVisualNode(Node *                        parentNode,
 
 // Fill armature joints - rest and final positions
 // ---------------------------------------------------------------------
+template <class T>
 void getBoneCoordinates(
-  vtkPolyData *                                      armature,
-  sofa::helper::vector<SkeletonJoint<Rigid3Types> >& skeletonJoints,
-  sofa::helper::vector<SkeletonBone>&                skeletonBones,
-  sofa::helper::vector<Rigid3Types::Coord>&          restCoordinates,
-  bool                                               invertXY = true)
+  vtkPolyData* armature,
+  sofa::helper::vector<SkeletonJoint<T> >& skeletonJoints,
+  sofa::helper::vector<SkeletonBone>& skeletonBones,
+  sofa::helper::vector<typename T::Coord>& restCoordinates,
+  bool invertXY = true)
 {
   vtkCellArray* armatureSegments = armature->GetLines();
   vtkCellData*  armatureCellData = armature->GetCellData();
@@ -481,8 +481,8 @@ void getBoneCoordinates(
   std::cout << "Number of bones: " << armatureSegments->GetNumberOfCells() <<
     std::endl;
 
-  vtkIdTypeArray* parenthood = vtkIdTypeArray::SafeDownCast(armatureCellData->GetArray(
-      "Parenthood"));
+  vtkIdTypeArray* parenthood = vtkIdTypeArray::SafeDownCast(
+    armatureCellData->GetArray("Parenthood"));
 
   vtkNew<vtkIdList> cell;
   armatureSegments->InitTraversal();
@@ -530,25 +530,27 @@ void getBoneCoordinates(
       translation[1]*=-1;
       }
 
-    Rigid3Types::Coord finalPose,restPosition;
+    typename T::Coord finalPose,restPosition;
     Vector3            centerOfMass = 0.5*(childJoint+parentJoint);
 
     vtkQuaterniond q = computeOrientationFromReferenceAxis(centerOfMass,
       childJoint);
 
-    restPosition.getCenter()      = centerOfMass;
-    restPosition.getOrientation() = Quat3(q.GetX(),q.GetY(),q.GetZ(),q.GetW());
+    //restPosition.getCenter()      = centerOfMass;
+    restPosition = centerOfMass;
+    //restPosition.getOrientation() = Quat3(q.GetX(),q.GetY(),q.GetZ(),q.GetW());
     restCoordinates.push_back(restPosition);
 
-    finalPose.getCenter() = rotation*
-                            (centerOfMass-parentJoint)+parentJoint+translation;
+    //finalPose.getCenter() = rotation*
+    //                        (centerOfMass-parentJoint)+parentJoint+translation;
+    finalPose = rotation* (centerOfMass-parentJoint)+parentJoint+translation;
 
-    Matrix3 orientation;
-    restPosition.getOrientation().toMatrix(orientation);
-    finalPose.getOrientation().fromMatrix(rotation*orientation);
+    //Matrix3 orientation;
+    //restPosition.getOrientation().toMatrix(orientation);
+    //finalPose.getOrientation().fromMatrix(rotation*orientation);
 
-    skeletonJoints.push_back(SkeletonJoint<Rigid3Types>());
-    SkeletonJoint<Rigid3Types>& skeletonJoint = skeletonJoints.back();
+    skeletonJoints.push_back(SkeletonJoint<T>());
+    SkeletonJoint<T>& skeletonJoint = skeletonJoints.back();
     skeletonJoint.addChannel(restPosition, 0.);
     skeletonJoint.addChannel(finalPose, 1.);
     skeletonBones.push_back(edgeId);
@@ -652,6 +654,56 @@ MechanicalObject<Rigid3Types>::SPtr createArticulatedFrame(
     }
   return articulatedFrame;
 }
+
+// ---------------------------------------------------------------------
+MechanicalObject<Vec3Types>::SPtr createFinalFrame(
+  Node *       parentNode,
+  vtkPolyData *armature,
+  bool         invertXY = true
+  )
+{
+  // Extract coordinates
+  sofa::helper::vector<SkeletonJoint<Vec3Types> > skeletonJoints;
+  sofa::helper::vector<SkeletonBone>              skeletonBones;
+  sofa::helper::vector<Vec3Types::Coord>          boneCoordinates;
+  getBoneCoordinates(armature, skeletonJoints, skeletonBones,
+                     boneCoordinates, invertXY);
+
+  MechanicalObject<Vec3Types>::SPtr articulatedFrame =
+    addNew<MechanicalObject<Vec3Types> >(parentNode, "articulatedFrame");
+
+  // Get bone positions
+  size_t totalNumberOfBones = boneCoordinates.size();
+  std::cout << "Number of bones: " << totalNumberOfBones << std::endl;
+
+  articulatedFrame->resize(totalNumberOfBones);
+  Data<MechanicalObject<Vec3Types>::VecCoord> *x =
+    articulatedFrame->write(VecCoordId::position());
+
+  MechanicalObject<Vec3Types>::VecCoord &vertices = *x->beginEdit();
+
+  for(size_t i = 0, end = totalNumberOfBones; i < end; ++i)
+    {
+    vertices[i] = skeletonJoints[i].mChannels[1]; // 1 = final
+    std::cout << "Bone[" << i << "] = " << vertices[i] << std::endl;
+    }
+  x->endEdit();
+
+  MeshTopology::SPtr meshTopology = addNew<MeshTopology>(parentNode,"ArticulatedFrameTopology");
+  meshTopology->seqPoints.setParent(&articulatedFrame->x);
+
+  // Copy tetrahedra array from vtk cell array
+  MeshTopology::SeqEdges& lines =
+    *meshTopology->seqEdges.beginEdit();
+  for(size_t i = 0, end = totalNumberOfBones-1; i < end; ++i)
+    {
+    lines.push_back(MeshTopology::Edge(i, i+1));
+    }
+  meshTopology->seqEdges.endEdit();
+
+  return articulatedFrame;
+}
+
 
 /// Create a FEM in parentNode.  A MeshTopology should be defined in
 /// parentNode prior to calling this function.
@@ -758,11 +810,6 @@ MechanicalObject<Vec3Types>::SPtr loadMesh(Node*               parentNode,
   MechanicalObject<Vec3Types>::SPtr mechanicalMesh =
     addNew<MechanicalObject<Vec3Types> >(parentNode,meshName.str());
 
-  std::map<vtkIdType, vtkIdType> boneMap;
-  if (boneLabel >= 0)
-    {
-    boneMap = copyVertices(points.GetPointer(),mechanicalMesh.get(), /*filter=*/ 1, boneLabel, polyMesh);
-    }
   std::map<vtkIdType, vtkIdType> skinMap =
     copyVertices(points.GetPointer(),mechanicalMesh.get(),
                  /*filter=*/ boneLabel >= 0 ? 2 : 0, boneLabel, polyMesh);
@@ -774,8 +821,8 @@ MechanicalObject<Vec3Types>::SPtr loadMesh(Node*               parentNode,
   // Copy tetrahedra array from vtk cell array
   MeshTopology::SeqTetrahedra& tetrahedra =
     *meshTopology->seqTetrahedra.beginEdit();
-  //tetrahedra.reserve(tetras->GetNumberOfCells());
-  //youngModulus.reserve(tetras->GetNumberOfCells());
+  tetrahedra.reserve(tetras->GetNumberOfCells());
+  youngModulus.reserve(tetras->GetNumberOfCells());
 
   std::cout << "Total # of tetrahedra: " << tetras->GetNumberOfCells()
             << std::endl;
@@ -798,44 +845,12 @@ MechanicalObject<Vec3Types>::SPtr loadMesh(Node*               parentNode,
       std::cerr << "Error: Non-tetrahedron encountered." << std::endl;
       continue;
       }
-    std::map<vtkIdType, vtkIdType>::const_iterator it;
-    it = boneMap.find(element->GetId(0));
-    vtkIdType p1 = ((it != boneMap.end()) ? it->second : skinMap[element->GetId(0)]);
-    it = boneMap.find(element->GetId(1));
-    vtkIdType p2 = ((it != boneMap.end()) ? it->second : skinMap[element->GetId(1)]);
-    it = boneMap.find(element->GetId(2));
-    vtkIdType p3 = ((it != boneMap.end()) ? it->second : skinMap[element->GetId(2)]);
-    it = boneMap.find(element->GetId(3));
-    vtkIdType p4 = ((it != boneMap.end()) ? it->second : skinMap[element->GetId(3)]);
 
-/*
-    bool useBoneMap = boneLabel >= 0 && isCellInLabel(cellId, materialIds, boneLabel);
-    std::map<vtkIdType, vtkIdType>& pointMap = useBoneMap ? boneMap : skinMap;
-    if (pointMap.find(element->GetId(0)) == pointMap.end() ||
-        pointMap.find(element->GetId(1)) == pointMap.end() ||
-        pointMap.find(element->GetId(2)) == pointMap.end() ||
-        pointMap.find(element->GetId(3)) == pointMap.end())
-      {
-      std::cerr << "Using " << (useBoneMap ? "bone" : "skin") << "map. "
-                << "Can't map 1 or many points in cell " << cellId << ": "
-                << element->GetId(0) << ", " << element->GetId(1) << ", "
-                << element->GetId(2) << ", " << element->GetId(3) << std::endl;
-      std::cerr << "1: " << (pointMap.find(element->GetId(0)) != pointMap.end()) << ", "
-                << "2: " << (pointMap.find(element->GetId(1)) != pointMap.end()) << ", "
-                << "3: " << (pointMap.find(element->GetId(2)) != pointMap.end()) << ", "
-                << "4: " << (pointMap.find(element->GetId(3)) != pointMap.end()) << std::endl;
-      }
-    tetrahedra.push_back(MeshTopology::Tetra(pointMap[element->GetId(0)],
-                                             pointMap[element->GetId(1)],
-                                             pointMap[element->GetId(2)],
-                                             pointMap[element->GetId(3)]));
-*/
-    tetrahedra.push_back(MeshTopology::Tetra(p1, p2, p3, p4));
+    tetrahedra.push_back(MeshTopology::Tetra(element->GetId(0), element->GetId(1), element->GetId(2), element->GetId(3)));
     if (materialParameters)
       {
       double parameters[2] = {0};
       materialParameters->GetTuple(cellId, parameters);
-      //youngModulus.push_back(parameters[0] <= 200 ? 1000 : 10000);
       youngModulus.push_back(parameters[0]);
       }
     }
@@ -1094,7 +1109,7 @@ Node::SPtr createCollisionNode(Node *parentNode, vtkPolyData * polyMesh,
 
   std::vector<std::string> modelTypes;
   modelTypes.push_back("Triangle");
-  modelTypes.push_back("Line");
+  //modelTypes.push_back("Line");
   modelTypes.push_back("Point");
 
   //Node::SPtr collisionNode(parentNode, false);//
@@ -1275,6 +1290,7 @@ int main(int argc, char** argv)
 {
   PARSE_ARGS;
 
+  
   if (Verbose)
     {
     std::cout << "Simulate pose with " << NumberOfSteps << " steps." << std::endl;
@@ -1354,10 +1370,14 @@ int main(int argc, char** argv)
     std::cout << "Create articulated frame..." << std::endl;
     }
 
-  MechanicalObject<Rigid3Types>::SPtr articulatedFrame =
-    createArticulatedFrame(skeletalNode.get(),
-                           armature, true, !IsArmatureInRAS);
+  //MechanicalObject<Rigid3Types>::SPtr articulatedFrame =
+    //createArticulatedFrame(skeletalNode.get(),
+  MechanicalObject<Vec3Types>::SPtr articulatedFrame =
+    createFinalFrame(skeletalNode.get(), armature, !IsArmatureInRAS);
+  UniformMass3::SPtr frameMass = addNew<UniformMass3>(skeletalNode.get(),"FrameMass");
+  frameMass->setTotalMass(10000000000);
 
+/*
   if (Verbose)
     {
     std::cout << "************************************************************"
@@ -1372,17 +1392,17 @@ int main(int argc, char** argv)
     boneNode.get(), tetMesh, BoneLabel);
   UniformMass3::SPtr boneMass = addNew<UniformMass3>(boneNode.get(),"Mass");
   boneMass->setTotalMass(30);
-
+  //skinMesh(skeletalNode.get(), articulatedFrame, posedMesh,
+  //         armature, tetMesh);
+  skinBoneMesh(boneNode.get(), articulatedFrame, boneMesh,
+               armature, tetMesh, BoneLabel);
+*/
   if (Verbose)
     {
     std::cout << "************************************************************"
               << std::endl;
     std::cout << "Create Anatomical mesh..." << std::endl;
     }
-  //skinMesh(skeletalNode.get(), articulatedFrame, posedMesh,
-  //         armature, tetMesh);
-  skinBoneMesh(boneNode.get(), articulatedFrame, boneMesh,
-               armature, tetMesh, BoneLabel);
 
   // Node for the mesh
   Node::SPtr anatomicalNode = skeletalNode->createChild("AnatomicalMesh");
@@ -1390,21 +1410,22 @@ int main(int argc, char** argv)
   // Create mesh dof
   Vec3Types::VecReal                youngModulus;
   MechanicalObject<Vec3Types>::SPtr posedMesh = loadMesh(
-    anatomicalNode.get(), tetMesh, youngModulus, BoneLabel);
+    anatomicalNode.get(), tetMesh, youngModulus);
   UniformMass3::SPtr anatomicalMass = addNew<UniformMass3>(anatomicalNode.get(),"Mass");
   anatomicalMass->setTotalMass(100);
 
+/*
   IdentityMapping<Vec3Types, Vec3Types>::SPtr identityMapping =
     addNew<IdentityMapping<Vec3Types, Vec3Types> >(anatomicalNode,
                                                    "identityMapping");
   identityMapping->setModels(boneMesh.get(), posedMesh.get());
-
+*/
   if (Verbose)
     {
     std::cout << "Create finite element model..." << std::endl;
     }
 
-  //Node::SPtr collisionNode;
+  Node::SPtr collisionNode;
   // Collision node
   if (EnableCollision)
     {
@@ -1416,21 +1437,88 @@ int main(int argc, char** argv)
                 << std::endl;
       std::cout << "Create collision node..." << std::endl;
       }
-    createCollisionNode(anatomicalNode.get(),
-                        surfaceMesh,posedMesh.get());
+    collisionNode = createCollisionNode(anatomicalNode.get(),
+                                        surfaceMesh,posedMesh.get());
+/*
+    PointModel::SPtr pointCollisionModel = dynamic_cast<PointModel *>(
+      collisionNode->getObject("collisionNode_PointCollision"));
+    pointCollisionModel->init();
+    typedef sofa::component::collision::BaseContactMapper< Vec3Types > MouseContactMapper;
+    MouseContactMapper* mapper = MouseContactMapper::Create(pointCollisionModel.get());
+    std::cout << "Mapper: " << mapper <<  "(" << typeid(mapper).name() << std::endl;
+    std::cout << "Mechanical state: " << pointCollisionModel->getMechanicalState() << std::endl;
+    std::cout << "Context: " << pointCollisionModel->getContext() << std::endl;
+    sofa::core::behavior::MechanicalState<Vec3Types>* mstateCollision =
+      mapper->createMapping("ArticulatedCollision");
+    std::cout << "mstateCollision: " << mstateCollision << std::endl;
+
+
+    mapper->resize(1);
+
+    const Vec3Types::Coord pointPicked( 1.63636, 0.636364, -0.545455);
+    const int idx = 0;
+    double r = 0.;
+    int index = mapper->addPointB(pointPicked, idx, r);
+    mapper->update();
+*/
+    int index = 0 ;
+    using sofa::component::interactionforcefield::StiffSpringForceField;
+
+    MechanicalObject<Vec3Types>* articulatedFrame = dynamic_cast<MechanicalObject<Vec3Types>*>(
+      skeletalNode->getObject("Skeleton_articulatedFrame"));
+    std::cout << "Articulated frame: " << articulatedFrame << std::endl;
+
+    sofa::core::behavior::BaseForceField::SPtr forcefield =
+      sofa::core::objectmodel::New< StiffSpringForceField<Vec3Types> >(
+//        articulatedFrame, mstateCollision);
+        articulatedFrame, posedMesh.get());
+    StiffSpringForceField< Vec3Types >* stiffspringforcefield =
+      static_cast< StiffSpringForceField< Vec3Types >* >(forcefield.get());
+    std::cout << "Stiff spring: " << stiffspringforcefield << std::endl;
+    stiffspringforcefield->setName("Spring-Contact");
+    stiffspringforcefield->setArrowSize((float)1);
+    stiffspringforcefield->setDrawMode(2); //Arrow mode if size > 0
+
+    double stiffness = 10000.;
+    double distance = 1.;
+    //stiffspringforcefield->addSpring(2, index, stiffness, 0.0, distance);
+    stiffspringforcefield->addSpring(0, 419, stiffness, 0.0, distance);
+    stiffspringforcefield->addSpring(1, 1025, stiffness, 0.0, distance);
+    stiffspringforcefield->addSpring(2, 1833, stiffness, 0.0, distance);
+    //stiffspringforcefield->addSpring(2, index, stiffness, 0.0, distance);
+/*
+    const sofa::core::objectmodel::TagSet &tags = mstateCollision->getTags();
+    for (sofa::core::objectmodel::TagSet::const_iterator it=tags.begin(); it!=tags.end(); ++it)
+      stiffspringforcefield->addTag(*it);
+
+    mstateCollision->getContext()->addObject(stiffspringforcefield);
+*/
+    const sofa::core::objectmodel::TagSet &tags = posedMesh->getTags();
+    for (sofa::core::objectmodel::TagSet::const_iterator it=tags.begin(); it!=tags.end(); ++it)
+      stiffspringforcefield->addTag(*it);
+
+    posedMesh->getContext()->addObject(stiffspringforcefield);
+
+    //mapping->apply(sofa::core::MechanicalParams::defaultInstance());
+    //mapping->applyJ(sofa::core::MechanicalParams::defaultInstance());
+    forcefield->init();
+
     }
 
+
+
+/*
   if (Verbose)
     {
     std::cout << "************************************************************"
               << std::endl;
     std::cout << "Skin mesh..." << std::endl;
     }
-  //skinMesh(anatomicalMap.get(), articulatedFrame, posedMesh,
-  //         armature, tetMesh);
+  skinMesh(anatomicalMap.get(), articulatedFrame, posedMesh,
+           armature, tetMesh);
   //skinBoneMesh(boneNode.get(), articulatedFrame, boneMesh,
   //             armature, tetMesh, BoneLabel);
-
+  */
 //   mapArticulatedFrameToMesh(anatomicalMap.get(),articulatedFrame,posedMesh);
 
   if (Verbose)
@@ -1451,7 +1539,7 @@ int main(int argc, char** argv)
     std::cout << "Init..." << std::endl;
     }
   sofa::simulation::getSimulation()->init(root.get());
-  root->setAnimate(true);
+//root->setAnimate(true);
 /*
   sofa::helper::vector< BaseNode* > parents = collisionNode->getParents();
   for (int i=0; i < parents.size(); ++i)
@@ -1459,6 +1547,12 @@ int main(int argc, char** argv)
     std::cout << ">>>>>> Collision parent " << i << ": " << parents[i]->name.getValue() << std::endl;
     }
 */
+
+  glutInit(&argc, argv);
+  sofa::gui::initMain();
+  sofa::gui::GUIManager::Init(argv[0]);
+  if (int err = sofa::gui::GUIManager::MainLoop(root))
+    return err;
   if (Verbose)
     {
     std::cout << "Animate..." << std::endl;
