@@ -61,6 +61,10 @@
 #include <plugins/SofaCUDA/sofa/gpu/cuda/CudaUniformMass.h>
 #endif
 
+
+// BenderVTK includes
+#include <vtkDualQuaternion.h>
+
 // VTK includes
 #include <vtkCellArray.h>
 #include <vtkCellCenters.h>
@@ -655,43 +659,377 @@ MechanicalObject<Rigid3Types>::SPtr createArticulatedFrame(
   return articulatedFrame;
 }
 
+//-------------------------------------------------------------------------------
+template<class T>
+inline void InvertXY(T& x)
+{
+  x[0]*=-1;
+  x[1]*=-1;
+}
+typedef itk::Vector<double,3> Vec3;
+typedef itk::Matrix<double,3,3> Mat33;
+//-------------------------------------------------------------------------------
+Mat33 ToItkMatrix(double M[3][3])
+{
+  Mat33 itkM;
+  for (int i=0; i<3; ++i)
+    {
+    for (int j=0; j<3; ++j)
+      {
+      itkM(i,j)  = M[i][j];
+      }
+    }
+
+  return itkM;
+}
+
+//-------------------------------------------------------------------------------
+struct RigidTransform
+{
+  Vec3 O;
+  Vec3 T;
+  Mat33 R;
+  //vtkQuaternion<double> R; //rotation quarternion
+
+  RigidTransform()
+  {
+    //initialize to identity transform
+    T[0] = T[1] = T[2] = 0.0;
+
+    R.SetIdentity();
+
+    O[0]=O[1]=O[2]=0.0;
+  }
+
+  void SetRotation(double* M)
+  {
+    this->R = ToItkMatrix((double (*)[3])M);
+  }
+
+  void SetRotationCenter(const double* center)
+  {
+    this->O = Vec3(center);
+  }
+  void GetRotationCenter(double* center)
+  {
+    center[0] = this->O[0];
+    center[1] = this->O[1];
+    center[2] = this->O[2];
+  }
+
+  void SetTranslation(const double* t)
+  {
+    this->T = Vec3(t);
+  }
+  void GetTranslation(double* t)const
+  {
+    t[0] = this->T[0];
+    t[1] = this->T[1];
+    t[2] = this->T[2];
+  }
+  void GetTranslationComponent(double* tc)const
+  {
+    Vec3 res = this->R*(-this->O) + this->O +T;
+    tc[0] = res[0];
+    tc[1] = res[1];
+    tc[2] = res[2];
+  }
+  void Apply(const double in[3], double out[3]) const
+  {
+    Vec3 x(in);
+    x = this->R*(x-this->O) + this->O +T;
+    out[0] =x[0];
+    out[1] =x[1];
+    out[2] =x[2];
+  }
+};
+
+//-------------------------------------------------------------------------------
+void GetArmatureTransform(vtkPolyData* polyData, vtkIdType cellId,
+                          const char* arrayName, const double* rcenter,
+                          RigidTransform& F,bool invertXY = true)
+{
+  double A[12];
+  polyData->GetCellData()->GetArray(arrayName)->GetTuple(cellId, A);
+
+  double R[3][3];
+  double T[3];
+  double RCenter[3];
+  int iA(0);
+  for (int i=0; i<3; ++i)
+    {
+    for (int j=0; j<3; ++j,++iA)
+      {
+      R[j][i] = A[iA];
+      }
+    }
+
+  for (int i=0; i<3; ++i)
+    {
+    T[i] = A[i+9];
+    RCenter[i] = rcenter[i];
+    }
+
+  if(invertXY)
+    {
+    for (int i=0; i<3; ++i)
+      {
+      for (int j=0; j<3; ++j)
+        {
+        if( (i>1 || j>1) && i!=j)
+          {
+          R[i][j]*=-1;
+          }
+        }
+      }
+    InvertXY(T);
+    }
+
+  F.SetRotation(&R[0][0]);
+  F.SetRotationCenter(RCenter);
+  // Translation between the head in rest and head in pose (translated because of its parent).
+  F.SetTranslation(T);
+}
+
+//-------------------------------------------------------------------------------
+bool WIComp(const std::pair<double, int>& left, const std::pair<double, int>& right)
+{
+  return left.first > right.first;
+}
+
+//-------------------------------------------------------------------------------
+vtkPoints* poseMesh(vtkPolyData* mesh, vtkPolyData* armature, bool invertXY = true)
+{
+  std::cout << "Mesh number of points: " << mesh->GetNumberOfPoints() << std::endl;
+  vtkPoints* outPoints = vtkPoints::New();
+  outPoints->Allocate(mesh->GetNumberOfPoints());
+  outPoints->SetNumberOfPoints(mesh->GetNumberOfPoints());
+
+  //----------------------------
+  // Read armature
+  //----------------------------
+  std::vector<RigidTransform> transforms;
+
+  vtkCellArray* armatureSegments = armature->GetLines();
+  vtkCellData* armatureCellData = armature->GetCellData();
+  vtkNew<vtkIdList> cell;
+  armatureSegments->InitTraversal();
+  int edgeId = 0;
+  if (!armatureCellData->GetArray("Transforms"))
+    {
+    std::cerr << "No 'Transforms' cell array in armature" << std::endl;
+    }
+  else
+    {
+    std::cout << "# components: "
+      << armatureCellData->GetArray("Transforms")->GetNumberOfComponents()
+      << std::endl;
+    }
+
+  while(armatureSegments->GetNextCell(cell.GetPointer()))
+    {
+    vtkIdType a = cell->GetId(0);
+    vtkIdType b = cell->GetId(1);
+
+    double ax[3], bx[3];
+    armature->GetPoints()->GetPoint(a, ax);
+    armature->GetPoints()->GetPoint(b, bx);
+
+    RigidTransform transform;
+    GetArmatureTransform(armature, edgeId, "Transforms", ax, transform, invertXY);
+    transforms.push_back(transform);
+    ++edgeId;
+    }
+
+  size_t numSites = transforms.size();
+
+  std::vector<vtkDualQuaternion<double> > dqs;
+  for (size_t i = 0; i < numSites; ++i)
+    {
+    RigidTransform& trans = transforms[i];
+    vtkQuaternion<double> rotation;
+    rotation.FromMatrix3x3((double (*)[3])&trans.R(0,0));
+    double tc[3];
+    trans.GetTranslationComponent(tc);
+    vtkDualQuaternion<double> dq;
+    dq.SetRotationTranslation(rotation, &tc[0]);
+    dqs.push_back(dq);
+    }
+
+  std::cout<<"Read "<<numSites<<" transforms"<<std::endl;
+
+  //------------------------------------------------------
+  // Get the weights
+  //------------------------------------------------------
+
+  // Find out if all the weight have a corresponding array
+  bool shouldUseWeightImages = false;
+  vtkPointData* pointData = mesh->GetPointData();
+  vtkPoints* inputPoints = mesh->GetPoints();
+  int numPoints = mesh->GetNumberOfPoints();
+
+  std::vector<vtkFloatArray*> surfaceVertexWeights;
+  std::cout<<"Trying to use the " << numSites << " weight field data"<<std::endl;
+
+  size_t numWeights = numSites;
+  for (size_t i = 0; i < numSites; ++i)
+    {
+    vtkFloatArray* weightArray =
+      vtkFloatArray::SafeDownCast(pointData->GetArray(i));
+
+    if (!weightArray || weightArray->GetNumberOfTuples() != numPoints)
+      {
+      //surfaceVertexWeights.clear();
+      //shouldUseWeightImages = true;
+      numWeights = i;
+
+      std::cerr<<"Could not find field array for weight " << i << std::endl;
+      break;
+      }
+    else
+      {
+      surfaceVertexWeights.push_back(weightArray);
+      }
+    }
+
+  const size_t MaximumNumberOfInterpolatedBones = 4;
+  // This property controls whether to interpolate with ScLerp
+  // (Screw Linear interpolation) or DLB (Dual Quaternion Linear
+  // Blending).
+  // Note that DLB (faster) is not tweaked to give proper results.
+  const bool UseScLerp = true;
+
+  std::cout << "Pose " << numPoints << "points" << std::endl;
+
+  //----------------------------
+  // Pose
+  //----------------------------
+  for (vtkIdType pi = 0; pi < numPoints; ++pi)
+    {
+
+    double xraw[3];
+    inputPoints->GetPoint(pi,xraw);
+
+    double wSum = 0.0;
+    for (size_t i = 0; i < numWeights; ++i)
+      {
+      wSum += surfaceVertexWeights[i]->GetValue(pi);
+      }
+
+    Vec3 y(0.0);
+    if (wSum <= 0.0) // shortcut
+      {
+      y = xraw;
+      }
+    else
+      {
+      bool LinearBlend = false;
+      if (LinearBlend)
+        {
+        for (size_t i = 0; i < numWeights; ++i)
+          {
+          double w = surfaceVertexWeights[i]->GetValue(pi) / wSum;
+          double yi[3];
+          const vtkDualQuaternion<double>& transform(dqs[i]);
+          transform.TransformPoint(xraw, yi);
+          y += w*Vec3(yi);
+          }
+        }
+      else
+        {
+        std::vector<std::pair<double, int> > ws;
+        for (size_t i=0; i < numWeights; ++i)
+          {
+          double w = surfaceVertexWeights[i]->GetValue(pi) / wSum;
+          ws.push_back(std::make_pair(w, i));
+          }
+        // To limit computation errors, it is important to start interpolating with the
+        // highest w first.
+        std::partial_sort(ws.begin(),
+                          ws.begin() + MaximumNumberOfInterpolatedBones,
+                          ws.end(),
+                          WIComp);
+        vtkDualQuaternion<double> transform = dqs[ws[0].second];
+        double w = ws[0].first;
+        // Warning, Sclerp is only meant to blend 2 DualQuaternions, I'm not
+        // sure it works with more than 2.
+        for (size_t i=1; i < MaximumNumberOfInterpolatedBones; ++i)
+          {
+          double w2 = ws[i].first;
+          int i2 = ws[i].second;
+          vtkDualQuaternion<double> dq;
+          if (UseScLerp)
+            {
+            dq = transform.ScLerp2(w2 / (w + w2), dqs[i2]);
+            // vtkDualQuaternion<double> dq2 = dqs[i2].ScLerp2(w/ (w + w2), dq);
+            // vtkDualQuaternion<double> dq3 = dq.ScLerp(w2/ (w + w2), dqs[i2]);
+            // vtkDualQuaternion<double> dq4 = dqs[i2].ScLerp(w/ (w + w2), dq);
+            }
+          else
+            {
+            dq = transform.Lerp(w2 / (w + w2), dqs[i2]);
+            }
+          transform = dq;
+          w += w2;
+          }
+        transform.TransformPoint(xraw, &y[0]);
+        }
+      }
+
+    //bool IsSurfaceInRAS = invertXY;
+    //if (!IsSurfaceInRAS)
+    //  {
+      //InvertXY(y);
+    //  }
+    outPoints->SetPoint(pi,y[0],y[1],y[2]);
+    }
+  std::cout << "outPoints: " << outPoints << " -> " << outPoints->GetNumberOfPoints() << std::endl;
+  return outPoints;
+}
+
 // ---------------------------------------------------------------------
 MechanicalObject<Vec3Types>::SPtr createFinalFrame(
   Node *       parentNode,
   vtkPolyData *armature,
+  vtkPolyData* mesh,
   bool         invertXY = true
   )
 {
   // Extract coordinates
-  sofa::helper::vector<SkeletonJoint<Vec3Types> > skeletonJoints;
+/*  sofa::helper::vector<SkeletonJoint<Vec3Types> > skeletonJoints;
   sofa::helper::vector<SkeletonBone>              skeletonBones;
   sofa::helper::vector<Vec3Types::Coord>          boneCoordinates;
   getBoneCoordinates(armature, skeletonJoints, skeletonBones,
                      boneCoordinates, invertXY);
-
+*/
+  vtkPoints* posedPoints = poseMesh(mesh, armature, invertXY);
   MechanicalObject<Vec3Types>::SPtr articulatedFrame =
     addNew<MechanicalObject<Vec3Types> >(parentNode, "articulatedFrame");
 
   // Get bone positions
-  size_t totalNumberOfBones = boneCoordinates.size();
-  std::cout << "Number of bones: " << totalNumberOfBones << std::endl;
+  //size_t totalNumberOfBones = boneCoordinates.size();
 
-  articulatedFrame->resize(totalNumberOfBones);
+  size_t numberOfPoints = posedPoints->GetNumberOfPoints();
+  std::cout << "Number of points: " << numberOfPoints << std::endl;
+  //articulatedFrame->resize(totalNumberOfBones);
+  articulatedFrame->resize(numberOfPoints);
   Data<MechanicalObject<Vec3Types>::VecCoord> *x =
     articulatedFrame->write(VecCoordId::position());
 
   MechanicalObject<Vec3Types>::VecCoord &vertices = *x->beginEdit();
 
-  for(size_t i = 0, end = totalNumberOfBones; i < end; ++i)
+  for(size_t i = 0; i < numberOfPoints; ++i)
     {
-    vertices[i] = skeletonJoints[i].mChannels[1]; // 1 = final
-    std::cout << "Bone[" << i << "] = " << vertices[i] << std::endl;
+    //vertices[i] = skeletonJoints[i].mChannels[1]; // 1 = final
+    Vector3 point;
+    posedPoints->GetPoint(i, point.ptr());
+    vertices[i] = point;
     }
   x->endEdit();
 
   MeshTopology::SPtr meshTopology = addNew<MeshTopology>(parentNode,"ArticulatedFrameTopology");
   meshTopology->seqPoints.setParent(&articulatedFrame->x);
-
+/*
   // Copy tetrahedra array from vtk cell array
   MeshTopology::SeqEdges& lines =
     *meshTopology->seqEdges.beginEdit();
@@ -700,7 +1038,8 @@ MechanicalObject<Vec3Types>::SPtr createFinalFrame(
     lines.push_back(MeshTopology::Edge(i, i+1));
     }
   meshTopology->seqEdges.endEdit();
-
+*/
+  posedPoints->Delete();
   return articulatedFrame;
 }
 
@@ -852,6 +1191,7 @@ MechanicalObject<Vec3Types>::SPtr loadMesh(Node*               parentNode,
       double parameters[2] = {0};
       materialParameters->GetTuple(cellId, parameters);
       youngModulus.push_back(parameters[0]);
+      //youngModulus.push_back(2000.);
       }
     }
   meshTopology->seqTetrahedra.endEdit();
@@ -1373,7 +1713,7 @@ int main(int argc, char** argv)
   //MechanicalObject<Rigid3Types>::SPtr articulatedFrame =
     //createArticulatedFrame(skeletalNode.get(),
   MechanicalObject<Vec3Types>::SPtr articulatedFrame =
-    createFinalFrame(skeletalNode.get(), armature, !IsArmatureInRAS);
+    createFinalFrame(skeletalNode.get(), armature, tetMesh, !IsArmatureInRAS);
   UniformMass3::SPtr frameMass = addNew<UniformMass3>(skeletalNode.get(),"FrameMass");
   frameMass->setTotalMass(10000000000);
 
@@ -1439,28 +1779,6 @@ int main(int argc, char** argv)
       }
     collisionNode = createCollisionNode(anatomicalNode.get(),
                                         surfaceMesh,posedMesh.get());
-/*
-    PointModel::SPtr pointCollisionModel = dynamic_cast<PointModel *>(
-      collisionNode->getObject("collisionNode_PointCollision"));
-    pointCollisionModel->init();
-    typedef sofa::component::collision::BaseContactMapper< Vec3Types > MouseContactMapper;
-    MouseContactMapper* mapper = MouseContactMapper::Create(pointCollisionModel.get());
-    std::cout << "Mapper: " << mapper <<  "(" << typeid(mapper).name() << std::endl;
-    std::cout << "Mechanical state: " << pointCollisionModel->getMechanicalState() << std::endl;
-    std::cout << "Context: " << pointCollisionModel->getContext() << std::endl;
-    sofa::core::behavior::MechanicalState<Vec3Types>* mstateCollision =
-      mapper->createMapping("ArticulatedCollision");
-    std::cout << "mstateCollision: " << mstateCollision << std::endl;
-
-
-    mapper->resize(1);
-
-    const Vec3Types::Coord pointPicked( 1.63636, 0.636364, -0.545455);
-    const int idx = 0;
-    double r = 0.;
-    int index = mapper->addPointB(pointPicked, idx, r);
-    mapper->update();
-*/
     int index = 0 ;
     using sofa::component::interactionforcefield::StiffSpringForceField;
 
@@ -1470,7 +1788,6 @@ int main(int argc, char** argv)
 
     sofa::core::behavior::BaseForceField::SPtr forcefield =
       sofa::core::objectmodel::New< StiffSpringForceField<Vec3Types> >(
-//        articulatedFrame, mstateCollision);
         articulatedFrame, posedMesh.get());
     StiffSpringForceField< Vec3Types >* stiffspringforcefield =
       static_cast< StiffSpringForceField< Vec3Types >* >(forcefield.get());
@@ -1481,28 +1798,25 @@ int main(int argc, char** argv)
 
     double stiffness = 10000.;
     double distance = 1.;
-    //stiffspringforcefield->addSpring(2, index, stiffness, 0.0, distance);
-    stiffspringforcefield->addSpring(0, 419, stiffness, 0.0, distance);
-    stiffspringforcefield->addSpring(1, 1025, stiffness, 0.0, distance);
-    stiffspringforcefield->addSpring(2, 1833, stiffness, 0.0, distance);
-    //stiffspringforcefield->addSpring(2, index, stiffness, 0.0, distance);
-/*
-    const sofa::core::objectmodel::TagSet &tags = mstateCollision->getTags();
-    for (sofa::core::objectmodel::TagSet::const_iterator it=tags.begin(); it!=tags.end(); ++it)
-      stiffspringforcefield->addTag(*it);
+    const vtkIdType numberOfPoints = tetMesh->GetPoints()->GetNumberOfPoints();
+    size_t sample = 0;
+    for (vtkIdType pointId = 0; pointId < numberOfPoints; ++pointId)
+      {
+      if (isPointInLabel(tetMesh, BoneLabel, pointId) && !(sample++ % 1))
+        {
+        stiffspringforcefield->addSpring(pointId, pointId, stiffness, 0.0, distance);
+        }
+      }
+    //stiffspringforcefield->addSpring(1, 1025, stiffness, 0.0, distance);
+    //stiffspringforcefield->addSpring(2, 1833, stiffness, 0.0, distance);
 
-    mstateCollision->getContext()->addObject(stiffspringforcefield);
-*/
     const sofa::core::objectmodel::TagSet &tags = posedMesh->getTags();
     for (sofa::core::objectmodel::TagSet::const_iterator it=tags.begin(); it!=tags.end(); ++it)
       stiffspringforcefield->addTag(*it);
 
     posedMesh->getContext()->addObject(stiffspringforcefield);
 
-    //mapping->apply(sofa::core::MechanicalParams::defaultInstance());
-    //mapping->applyJ(sofa::core::MechanicalParams::defaultInstance());
     forcefield->init();
-
     }
 
 
