@@ -395,10 +395,12 @@ Node::SPtr createRootWithCollisionPipeline(const std::string& responseType = std
   addNew<sofa::component::misc::RequiredPlugin>(root,"LDI Detection");
   ldicollisionPlugin->pluginName.setValue("ldidetection");
 
-  LayeredDepthImagesPipeline::SPtr collisionPipeline = addNew<LayeredDepthImagesPipeline>(root,"Collision Pipeline");
+  LayeredDepthImagesPipeline::SPtr collisionPipeline =
+    addNew<LayeredDepthImagesPipeline>(root,"Collision Pipeline");
   collisionPipeline->Kselfpressure.setValue(100);
   collisionPipeline->Kpressure.setValue(20);
-  collisionPipeline->resolution.setValue(256);
+  //collisionPipeline->resolution.setValue(256);
+  collisionPipeline->resolution.setValue(64);
   collisionPipeline->resolutionPixel.setValue(20);
   collisionPipeline->depthBB.setValue(8);
   collisionPipeline->bSelfCollision.setValue(true);
@@ -1232,7 +1234,7 @@ MechanicalObject<Vec3Types>::SPtr loadMesh(Node*               parentNode,
       {
       double parameters[2] = {0};
       materialParameters->GetTuple(cellId, parameters);
-      youngModulus.push_back(parameters[0]);
+      youngModulus.push_back(parameters[0] > 20000 ? 6000 : 5000);
       //youngModulus.push_back(2000.);
       }
     }
@@ -1668,7 +1670,7 @@ void initMesh(vtkPolyData* outputPolyData, vtkPolyData* inputPolyData,
 }
 
 //------------------------------------------------------------------------------
-int main(int argc, char** argv)
+int main(int argc, char* argv[])
 {
   PARSE_ARGS;
 
@@ -1800,31 +1802,39 @@ int main(int argc, char** argv)
       }
     collisionNode = createCollisionNode(anatomicalNode.get(),
                                         surfaceMesh,posedMesh.get());
-    int index = 0 ;
-    using sofa::component::interactionforcefield::StiffSpringForceField;
-
-    StiffSpringForceField<Vec3Types>::SPtr stiffspringforcefield = sofa::core::objectmodel::New<StiffSpringForceField<Vec3Types> >(articulatedFrame.get(),posedMesh.get());
-    stiffspringforcefield->setName("Spring-Contact");
-    anatomicalNode->addObject(stiffspringforcefield);
-
-    std::cout << "Stiff spring: " << stiffspringforcefield << std::endl;
-
-    double stiffness = 10000.;
-    double distance = 1.;
-    const vtkIdType numberOfPoints = tetMesh->GetPoints()->GetNumberOfPoints();
-    size_t sample = 0;
-    for (vtkIdType pointId = 0; pointId < numberOfPoints; ++pointId)
-      {
-      if (isPointInLabel(tetMesh, BoneLabel, pointId) && !(sample++ % 1))
-        {
-        stiffspringforcefield->addSpring(pointId, pointId, stiffness, 0.0, distance);
-        }
-      }
-
-    const sofa::core::objectmodel::TagSet &tags = posedMesh->getTags();
-    for (sofa::core::objectmodel::TagSet::const_iterator it=tags.begin(); it!=tags.end(); ++it)
-      stiffspringforcefield->addTag(*it);
     }
+
+  if (Verbose)
+    {
+    std::cout << "************************************************************"
+              << std::endl;
+    std::cout << "Create spring forces..." << std::endl;
+    }
+  int index = 0 ;
+  using sofa::component::interactionforcefield::StiffSpringForceField;
+
+  StiffSpringForceField<Vec3Types>::SPtr stiffspringforcefield = sofa::core::objectmodel::New<StiffSpringForceField<Vec3Types> >(articulatedFrame.get(),posedMesh.get());
+  stiffspringforcefield->setName("Spring-Contact");
+  anatomicalNode->addObject(stiffspringforcefield);
+
+  std::cout << "Stiff spring: " << stiffspringforcefield << std::endl;
+
+  double stiffness = 10000.;
+  double distance = 1.;
+  const vtkIdType numberOfPoints = tetMesh->GetPoints()->GetNumberOfPoints();
+  size_t sample = 0;
+  for (vtkIdType pointId = 0; pointId < numberOfPoints; ++pointId)
+    {
+    if (isPointInLabel(tetMesh, BoneLabel, pointId) && !(sample++ % 1))
+      {
+      stiffspringforcefield->addSpring(pointId, pointId, stiffness, 0.0, distance);
+      }
+    }
+
+  const sofa::core::objectmodel::TagSet &tags = posedMesh->getTags();
+  for (sofa::core::objectmodel::TagSet::const_iterator it=tags.begin(); it!=tags.end(); ++it)
+    stiffspringforcefield->addTag(*it);
+
 
   if (Verbose)
     {
@@ -1845,11 +1855,24 @@ int main(int argc, char** argv)
     }
   sofa::simulation::getSimulation()->init(root.get());
 
-  glutInit(&argc, argv);
-  sofa::gui::initMain();
-  sofa::gui::GUIManager::Init(argv[0]);
-  if (int err = sofa::gui::GUIManager::MainLoop(root))
-    return err;
+  if (GUI)
+    {
+    std::cout << "Open GUI..." << std::endl;
+    int gluArgc  = 1;
+    char** gluArgv = new char *;
+    gluArgv[0] = new char[strlen(argv[0])+1];
+    memcpy(gluArgv[0], argv[0], strlen(argv[0])+1);
+    glutInit(&gluArgc, gluArgv);
+    sofa::gui::initMain();
+    sofa::gui::GUIManager::Init(gluArgv[0]);
+    //root->setAnimate(true);
+    int err = sofa::gui::GUIManager::MainLoop(root);
+    if (err)
+      {
+      std::cerr << "Error from SOFA gui" << std::endl;
+      return err;
+      }
+    }
   if (Verbose)
     {
     std::cout << "Animate..." << std::endl;
