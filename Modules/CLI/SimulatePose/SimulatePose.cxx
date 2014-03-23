@@ -34,6 +34,7 @@
 #include <sofa/component/collision/MinProximityIntersection.h>
 #include <sofa/component/collision/NewProximityIntersection.h>
 #include <sofa/component/collision/PointModel.h>
+#include <sofa/component/collision/TetrahedronModel.h>
 #include <sofa/component/collision/TriangleModel.h>
 #include <sofa/component/linearsolver/CGLinearSolver.h>
 #include <sofa/component/mapping/BarycentricMappingRigid.h>
@@ -49,6 +50,8 @@
 #include <sofa/simulation/graph/DAGSimulation.h>
 #include <sofa/gui/GUIManager.h>
 #include <sofa/gui/Main.h>
+#define SOFA_QT4
+#include <sofa/gui/qt/RealGUI.h>
 
 // SofaCUDA includes
 #ifdef SOFA_CUDA
@@ -316,10 +319,10 @@ void addCollisionModels(Node::SPtr                      collisionNode,
                         const std::vector<std::string> &elements
                         )
 {
-  double stiffness = 10000.;//10.; // 30.
+  double stiffness = 1000;//1000;//10000.;//10.; // 30.
   double friction = 0.;
-  double proximity = 0.05;
-  double restitution = 0.1;
+  double proximity = 0.;//0.05;
+  double restitution = 0.;//0.1;
   for (size_t i=0; i < elements.size(); ++i)
     {
     if (elements[i] == "Triangle")
@@ -354,6 +357,16 @@ void addCollisionModels(Node::SPtr                      collisionNode,
       pointModel->setContactFriction(friction);
       pointModel->setContactRestitution(restitution);
       pointModel->setProximity(proximity);
+      }
+    else if (elements[i] == "Tetrahedron")
+      {
+      TetrahedronModel::SPtr tetrahedronModel = addNew<TetrahedronModel>(collisionNode,
+        "TetrahedronCollision");
+      tetrahedronModel->setSelfCollision(true);
+      tetrahedronModel->setContactStiffness(stiffness);
+      tetrahedronModel->setContactFriction(friction);
+      tetrahedronModel->setContactRestitution(restitution);
+      tetrahedronModel->setProximity(proximity);
       }
     else
       {
@@ -390,8 +403,8 @@ Node::SPtr createRootWithCollisionPipeline(const std::string& responseType = std
   ProximityType::SPtr detectionProximity =
     sofa::core::objectmodel::New<ProximityType>();
   detectionProximity->setName("Proximity");
-  detectionProximity->setAlarmDistance(0.0001);     //warning distance
-  detectionProximity->setContactDistance(0.000001);   //min distance before setting a spring to create a repulsion
+  detectionProximity->setAlarmDistance(1.);//0.0001);     //warning distance
+  detectionProximity->setContactDistance(1.);//0.000001);   //min distance before setting a spring to create a repulsion
   root->addObject(detectionProximity);
 
   //--> adding contact manager
@@ -798,9 +811,15 @@ bool WIComp(const std::pair<double, int>& left, const std::pair<double, int>& ri
 }
 
 //-------------------------------------------------------------------------------
-vtkPoints* poseMesh(vtkPolyData* mesh, vtkPolyData* armature, bool invertXY = true)
+vtkPoints* poseMesh(vtkPolyData* mesh, vtkPolyData* armature, bool invertXY = true,
+                    double coef = 1., bool verbose = true)
 {
-  std::cout << "Mesh number of points: " << mesh->GetNumberOfPoints() << std::endl;
+  coef = std::min (1., std::max(0., coef));
+  std::cout << "Pose mesh for frame: " << coef << std::endl;
+  if (verbose)
+    {
+    std::cout << "Mesh number of points: " << mesh->GetNumberOfPoints() << std::endl;
+    }
   vtkPoints* outPoints = vtkPoints::New();
   outPoints->Allocate(mesh->GetNumberOfPoints());
   outPoints->SetNumberOfPoints(mesh->GetNumberOfPoints());
@@ -819,7 +838,7 @@ vtkPoints* poseMesh(vtkPolyData* mesh, vtkPolyData* armature, bool invertXY = tr
     {
     std::cerr << "No 'Transforms' cell array in armature" << std::endl;
     }
-  else
+  else if (verbose)
     {
     std::cout << "# components: "
       << armatureCellData->GetArray("Transforms")->GetNumberOfComponents()
@@ -856,7 +875,10 @@ vtkPoints* poseMesh(vtkPolyData* mesh, vtkPolyData* armature, bool invertXY = tr
     dqs.push_back(dq);
     }
 
-  std::cout<<"Read "<<numSites<<" transforms"<<std::endl;
+  if (verbose)
+    {
+    std::cout<<"Read "<<numSites<<" transforms"<<std::endl;
+    }
 
   //------------------------------------------------------
   // Get the weights
@@ -869,7 +891,10 @@ vtkPoints* poseMesh(vtkPolyData* mesh, vtkPolyData* armature, bool invertXY = tr
   int numPoints = mesh->GetNumberOfPoints();
 
   std::vector<vtkFloatArray*> surfaceVertexWeights;
-  std::cout<<"Trying to use the " << numSites << " weight field data"<<std::endl;
+  if (verbose)
+    {
+    std::cout<<"Trying to use the " << numSites << " weight field data"<<std::endl;
+    }
 
   size_t numWeights = numSites;
   for (size_t i = 0; i < numSites; ++i)
@@ -899,7 +924,10 @@ vtkPoints* poseMesh(vtkPolyData* mesh, vtkPolyData* armature, bool invertXY = tr
   // Note that DLB (faster) is not tweaked to give proper results.
   const bool UseScLerp = true;
 
-  std::cout << "Pose " << numPoints << "points" << std::endl;
+  if (verbose)
+    {
+    std::cout << "Pose " << numPoints << "points" << std::endl;
+    }
 
   //----------------------------
   // Pose
@@ -931,7 +959,8 @@ vtkPoints* poseMesh(vtkPolyData* mesh, vtkPolyData* armature, bool invertXY = tr
           double w = surfaceVertexWeights[i]->GetValue(pi) / wSum;
           double yi[3];
           const vtkDualQuaternion<double>& transform(dqs[i]);
-          transform.TransformPoint(xraw, yi);
+          vtkDualQuaternion<double> t = transform * coef;
+          t.TransformPoint(xraw, yi);
           y += w*Vec3(yi);
           }
         }
@@ -972,6 +1001,7 @@ vtkPoints* poseMesh(vtkPolyData* mesh, vtkPolyData* armature, bool invertXY = tr
           transform = dq;
           w += w2;
           }
+        transform = transform * coef;
         transform.TransformPoint(xraw, &y[0]);
         }
       }
@@ -983,7 +1013,10 @@ vtkPoints* poseMesh(vtkPolyData* mesh, vtkPolyData* armature, bool invertXY = tr
     //  }
     outPoints->SetPoint(pi,y[0],y[1],y[2]);
     }
-  std::cout << "outPoints: " << outPoints << " -> " << outPoints->GetNumberOfPoints() << std::endl;
+  if (verbose)
+    {
+    std::cout << "outPoints: " << outPoints << " -> " << outPoints->GetNumberOfPoints() << std::endl;
+    }
   return outPoints;
 }
 
@@ -992,7 +1025,8 @@ MechanicalObject<Vec3Types>::SPtr createFinalFrame(
   Node *       parentNode,
   vtkPolyData *armature,
   vtkPolyData* mesh,
-  bool         invertXY = true
+  bool         invertXY = true,
+  double frame = 1.
   )
 {
   // Extract coordinates
@@ -1002,7 +1036,7 @@ MechanicalObject<Vec3Types>::SPtr createFinalFrame(
   getBoneCoordinates(armature, skeletonJoints, skeletonBones,
                      boneCoordinates, invertXY);
 */
-  vtkPoints* posedPoints = poseMesh(mesh, armature, invertXY);
+  vtkPoints* posedPoints = poseMesh(mesh, armature, invertXY, frame );
   MechanicalObject<Vec3Types>::SPtr articulatedFrame =
     addNew<MechanicalObject<Vec3Types> >(parentNode, "articulatedFrame");
 
@@ -1442,21 +1476,22 @@ void mapArticulatedFrameToMesh(Node *                              parentNode,
 Node::SPtr createCollisionNode(Node *parentNode, vtkPolyData * polyMesh,
                                MechanicalObject<Vec3Types> *volumeMesh,
                                int label = 0,
-                               bool createCollisionSurface = true
+                               bool createCollisionSurface = false
                                )
 {
   std::cout << "Creating collision node..." << std::endl;
 
   std::vector<std::string> modelTypes;
-  modelTypes.push_back("Triangle");
-  modelTypes.push_back("Line");
-  modelTypes.push_back("Point");
 
-  //Node::SPtr collisionNode(parentNode, false);//
-  Node::SPtr collisionNode = parentNode;
+  Node::SPtr collisionNode(parentNode, false);//
+  //Node::SPtr collisionNode = parentNode;
+
   // Create a new node for a collision model if a surface is given
   if (createCollisionSurface)
     {
+    modelTypes.push_back("Triangle");
+    modelTypes.push_back("Line");
+    modelTypes.push_back("Point");
 
     if(!polyMesh)
       {
@@ -1536,6 +1571,10 @@ Node::SPtr createCollisionNode(Node *parentNode, vtkPolyData * polyMesh,
       addNew<BarycentricMapping3_to_3>(
         collisionNode,"collisionMapping");
     mechMapping->setModels(volumeMesh, surfaceMesh.get());
+    }
+  else
+    {
+    modelTypes.push_back("Tetrahedron");
     }
   addCollisionModels(collisionNode,modelTypes);
   //sofa::helper::vector< BaseNode* > parents = collisionNode->getParents();
@@ -1625,6 +1664,45 @@ void initMesh(vtkPolyData* outputPolyData, vtkPolyData* inputPolyData,
 
 }
 
+#include "SimulatePose.h"
+class StepHook::Internal
+{
+public:
+  Internal(): Armature(0), InvertArmature(true), Mesh(0), NumberOfSteps(1000){}
+  vtkPolyData* Armature;
+  bool InvertArmature;
+  vtkPolyData* Mesh;
+  MechanicalObject<Vec3Types>::SPtr PosedMechanicalObject;
+  Node::SPtr Root;
+  size_t NumberOfSteps;
+};
+
+StepHook::StepHook()
+{
+  this->Pimpl = new Internal();
+}
+
+void StepHook::step()
+  {
+    static double step = 2;
+    vtkPoints* posedPoints = poseMesh(this->Pimpl->Mesh, this->Pimpl->Armature, this->Pimpl->InvertArmature,
+                                      step++ / this->Pimpl->NumberOfSteps, /*verbose= */false);
+
+    size_t numberOfPoints = posedPoints->GetNumberOfPoints();
+    Data<MechanicalObject<Vec3Types>::VecCoord> *x =
+      this->Pimpl->PosedMechanicalObject->write(VecCoordId::position());
+
+    MechanicalObject<Vec3Types>::VecCoord &vertices = *x->beginEdit();
+
+    for(size_t i = 0; i < numberOfPoints; ++i)
+      {
+      Vector3 point;
+      posedPoints->GetPoint(i, point.ptr());
+      vertices[i] = point;
+      }
+    x->endEdit();
+  }
+
 //------------------------------------------------------------------------------
 int main(int argc, char** argv)
 {
@@ -1713,7 +1791,7 @@ int main(int argc, char** argv)
   //MechanicalObject<Rigid3Types>::SPtr articulatedFrame =
     //createArticulatedFrame(skeletalNode.get(),
   MechanicalObject<Vec3Types>::SPtr articulatedFrame =
-    createFinalFrame(skeletalNode.get(), armature, tetMesh, !IsArmatureInRAS);
+    createFinalFrame(skeletalNode.get(), armature, tetMesh, !IsArmatureInRAS, dt);
   UniformMass3::SPtr frameMass = addNew<UniformMass3>(skeletalNode.get(),"FrameMass");
   frameMass->setTotalMass(10000000000);
 
@@ -1799,10 +1877,10 @@ int main(int argc, char** argv)
               << std::endl;
     }
   // Run simulation time steps
+  std::string sceneFileName = OutputTetMesh;
+  sceneFileName += "Scene.scn";
   if (Debug)
     {
-    std::string sceneFileName = OutputTetMesh;
-    sceneFileName += "Scene.scn";
     std::cout << "Write scene at " << sceneFileName << std::endl;
     sofa::simulation::getSimulation()->exportXML(root.get(), sceneFileName.c_str());
     }
@@ -1815,6 +1893,17 @@ int main(int argc, char** argv)
   glutInit(&argc, argv);
   sofa::gui::initMain();
   sofa::gui::GUIManager::Init(argv[0]);
+  sofa::gui::GUIManager::createGUI(root, sceneFileName.c_str());
+  sofa::gui::qt::RealGUI* gui = dynamic_cast<sofa::gui::qt::RealGUI*>(sofa::gui::GUIManager::getGUI());
+  std::cout << "GUI: " << sofa::gui::GUIManager::getGUI() << " QT: " <<  gui << std::endl;
+  StepHook stepHook;
+  stepHook.Pimpl->Armature = armature;
+  stepHook.Pimpl->InvertArmature = !IsArmatureInRAS;
+  stepHook.Pimpl->Mesh = tetMesh;
+  stepHook.Pimpl->PosedMechanicalObject = posedMesh;
+  stepHook.Pimpl->Root = root;
+  stepHook.Pimpl->NumberOfSteps = 100.;
+  QObject::connect(gui, SIGNAL(newStep()), &stepHook, SLOT(step()));
   if (int err = sofa::gui::GUIManager::MainLoop(root))
     return err;
   if (Verbose)
