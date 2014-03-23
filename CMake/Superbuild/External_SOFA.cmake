@@ -85,7 +85,7 @@ if(NOT DEFINED ${proj}_DIR)
     SOURCE_DIR ${CMAKE_BINARY_DIR}/${proj}
     BINARY_DIR ${${proj}_DIR}
     GIT_REPOSITORY "git://public.kitware.com/Bender/SOFA.git"
-    GIT_TAG "3704279d21342969216a621b8c9b96a5cab33796"
+    GIT_TAG "b79944acb7b6d7cea074db7321068f5265c2bde9"
     INSTALL_COMMAND ""
     CMAKE_GENERATOR ${gen}
     LIST_SEPARATOR &&
